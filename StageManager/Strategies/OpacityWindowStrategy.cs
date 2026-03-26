@@ -107,10 +107,7 @@ namespace StageManager.Strategies
 			// Skip transparency for minimized windows - let Windows handle them natively
 			if (ShouldSkipTransparencyForWindow(hWnd))
 			{
-				// DEBUG: Log transparency operations to track opacity behavior
-#if DEBUG
-				System.Diagnostics.Debug.WriteLine($"[OPACITY] Show SKIPPED: Window='{window.Title}' Handle={hWnd} IsMinimized={window.IsMinimized}");
-#endif
+				Log.Window("OPACITY", "Show SKIPPED (invalid/minimized)", window);
 
 				// For minimized windows, don't apply any transparency logic
 				// Just ensure they're in proper minimized state and return
@@ -172,8 +169,9 @@ namespace StageManager.Strategies
 					SetWindowLong(hWnd, GWL_EXSTYLE, GetWindowLong(hWnd, GWL_EXSTYLE) | WS_EX_LAYERED);
 				}
 
-				// Start fade-in from transparent to fully opaque
-				FadeWindow(hWnd, 0, 255);
+				// Instantly set full opacity (no fade — the transition animation placeholder covers the reveal)
+				Log.Window("OPACITY", "Instant show alpha→255", window);
+				SetLayeredWindowAttributes(hWnd, 0, 255, LWA_ALPHA);
 
 				// Bring window to top immediately so it's in front while fading in
 				window.BringToTop();
@@ -191,10 +189,7 @@ namespace StageManager.Strategies
 			// Skip transparency for minimized windows - let Windows handle them natively
 			if (ShouldSkipTransparencyForWindow(hWnd))
 			{
-				// DEBUG: Log transparency operations to track opacity behavior
-#if DEBUG
-				System.Diagnostics.Debug.WriteLine($"[OPACITY] Hide SKIPPED: Window='{window.Title}' Handle={hWnd} IsMinimized={window.IsMinimized}");
-#endif
+				Log.Window("OPACITY", "Hide SKIPPED (invalid/minimized)", window);
 				return; // Skip minimized/invalid windows to prevent issues
 			}
 
@@ -207,10 +202,7 @@ namespace StageManager.Strategies
 				// Double-check after acquiring lock (double-check locking pattern)
 				if (ShouldSkipTransparencyForWindow(hWnd))
 				{
-					// DEBUG: Log transparency operations to track opacity behavior
-#if DEBUG
-					Debug.WriteLine($"[OPACITY] Hide SKIPPED (double-check): Window='{window.Title}' Handle={hWnd}");
-#endif
+					Log.Window("OPACITY", "Hide SKIPPED (double-check)", window);
 					return;
 				}
 
@@ -228,6 +220,7 @@ namespace StageManager.Strategies
 				SetWindowLong(hWnd, GWL_EXSTYLE, newStyle);
 
 				// Instantly hide window by setting alpha to 0 (no fade) so there is no brief overlap
+				Log.Window("OPACITY", "Instant hide alpha→0", window);
 				SetLayeredWindowAttributes(hWnd, 0, 0, LWA_ALPHA);
 
 				// Keep mouse-through flag enabled so clicks pass to visible windows underneath
@@ -238,6 +231,7 @@ namespace StageManager.Strategies
 				// Additional fallback: move window off-screen when transparency is not supported
 				if (!_supportsLayeredTransparency(hWnd))
 				{
+					Log.Window("OPACITY", "Transparency not supported, falling back to off-screen move", window);
 					try
 					{
 						// Store original position only once (atomically)

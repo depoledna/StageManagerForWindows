@@ -10,7 +10,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Text;
 using System.Windows;
-using System.Diagnostics;
 
 namespace StageManager
 {
@@ -26,9 +25,6 @@ namespace StageManager
 		private IWindow _lastFocusedWindow;
 		private DateTime _lastFocusChange = DateTime.MinValue; // Track rapid focus changes
 
-#if DEBUG
-		private const bool DEBUG_SCENE_MERGE = true;
-#endif
 
 		public event EventHandler<SceneChangedEventArgs> SceneChanged;
 		public event EventHandler<CurrentSceneSelectionChangedEventArgs> CurrentSceneSelectionChanged;
@@ -86,6 +82,8 @@ namespace StageManager
 			if (System.Windows.Application.Current?.Dispatcher?.CheckAccess() == false)
 				throw new NotSupportedException("Start has to be called on the main thread, otherwise events won't be fired.");
 
+			Log.Info("STARTUP", "SceneManager starting");
+
 			WindowsManager.WindowCreated += WindowsManager_WindowCreated;
 			WindowsManager.WindowUpdated += WindowsManager_WindowUpdated;
 			WindowsManager.WindowDestroyed += WindowsManager_WindowDestroyed;
@@ -93,6 +91,8 @@ namespace StageManager
 			WindowsManager.DesktopShortClick += WindowsManager_DesktopShortClick;
 
 			await WindowsManager.Start();
+
+			Log.Info("STARTUP", "SceneManager started, WindowsManager active");
 		}
 
 		internal void Stop()
@@ -146,18 +146,21 @@ namespace StageManager
 		private void WindowsManager_WindowUpdated(IWindow window, WindowUpdateType type)
 		{
 			if (_suspend)
+			{
+				Log.Window("EVENT", $"SUSPENDED, ignoring {type}", window);
 				return;
+			}
 
 			if (type == WindowUpdateType.Foreground)
 			{
 				// Skip rapid focus changes to prevent scene switching loops
 				if (IsRapidFocusChange())
+				{
+					Log.Window("FOCUS", "RAPID focus change, skipping", window);
 					return;
+				}
 
-				// DEBUG: Log focus changes to trace scene switching behavior
-#if DEBUG
-				Debug.WriteLine($"[FOCUS] Foreground change: Window='{window.Title}' Handle={window.Handle} Process='{window.ProcessName}' IsMinimized={window.IsMinimized} IsFocused={window.IsFocused}");
-#endif
+				Log.Window("FOCUS", "Foreground change", window);
 
 				_lastFocusedWindow = window; // remember for scene restore
 				SwitchToSceneByWindow(window).SafeFireAndForget();
@@ -169,13 +172,18 @@ namespace StageManager
 			// application wants to interact again and restore normal interactivity.
 			else if (type == WindowUpdateType.Show)
 			{
+				Log.Window("EVENT", "Show", window);
+
 				// Option2: Make Show event authoritative for current scene windows
 				var scene = FindSceneForWindow(window);
 				if (scene is not null && ReferenceEquals(scene, _current))
 				{
 					// If the window is minimized but just got shown, ensure it is restored
 					if (window.IsMinimized)
+					{
+						Log.Window("EVENT", "Show: restoring minimized window in current scene", window);
 						window.ShowNormal();
+					}
 
 					// Force clearing opacity/mouse-through regardless of skip checks
 					WindowStrategy.Show(window);
@@ -194,6 +202,7 @@ namespace StageManager
 				// This prevents scene creation for minimized windows that shouldn't create scenes
 				if (window.IsFocused)
 				{
+					Log.Window("EVENT", "Show + focused → switching scene", window);
 					// Bring Stage Manager's focus model in sync by switching to the scene
 					// containing this window. This guarantees proper stacking order and
 					// icon visibility handling.
@@ -273,33 +282,44 @@ namespace StageManager
 
 			// Only treat clicks on truly blank desktop areas as a toggle trigger
 			if (!IsBlankDesktopClick(handle))
+			{
+				Log.Info("DESKTOP", "Click on desktop icon, not blank area — ignoring", handle);
 				return;
+			}
 
 			// Debounce additional toggles happening too quickly (double-click already filtered by WindowsManager)
 			var now = DateTime.Now;
 			if ((now - _lastDesktopToggle).TotalMilliseconds <100)
+			{
+				Log.Info("DESKTOP", "Debounced desktop toggle");
 				return;
+			}
 
 			_lastDesktopToggle = now;
 
 			if (_current is null)
 			{
+				Log.Action($"Desktop click → restore last scene '{_lastScene?.Title}'");
 				if (_lastScene is object)
 					SwitchTo(_lastScene).SafeFireAndForget();
 			}
 			else
 			{
+				Log.Action($"Desktop click → show desktop (hiding '{_current?.Title}')");
 				SwitchTo(null).SafeFireAndForget();
 			}
 		}
 
 		private void WindowsManager_WindowDestroyed(IWindow window)
 		{
+			Log.Window("EVENT", "WindowDestroyed", window);
+
 			var scene = FindSceneForWindow(window);
 
 			if (scene is not null)
 			{
 				scene.Remove(window);
+				Log.Scene("Window removed from scene", scene, window);
 
 				if (scene.Windows.Any())
 				{
@@ -323,6 +343,7 @@ namespace StageManager
 				}
 				else
 				{
+					Log.Scene("Scene empty, removing", scene);
 					_scenes.Remove(scene);
 					SceneChanged?.Invoke(this, new SceneChangedEventArgs(scene, window, ChangeType.Removed));
 
@@ -355,25 +376,31 @@ namespace StageManager
 		{
 			// Keep persistent windows (e.g. Teams meeting pop-ups) outside of scene logic.
 			if (IsPersistentWindow(window))
+			{
+				Log.Window("SCENE", "Persistent window, skipping scene logic", window);
 				return;
+			}
 
 			// Only create/switch scenes for windows that are actually focused, not just shown
 			// This prevents scene creation for minimized windows that get Show events without focus
 			if (!window.IsFocused)
+			{
+				Log.Window("SCENE", "Window not focused, skipping scene switch", window);
 				return;
+			}
 
 			var scene = FindSceneForWindow(window);
 			if (scene is null)
 			{
 				scene = new Scene(GetWindowGroupKey(window), window);
 				_scenes.Add(scene);
+				Log.Scene("Created new scene for window", scene, window);
 				SceneChanged?.Invoke(this, new SceneChangedEventArgs(scene, window, ChangeType.Created));
 			}
-
-			// DEBUG: Log scene creation/switching to trace behavior
-#if DEBUG
-				Debug.WriteLine($"[SCENE] SwitchToSceneByWindow: Window='{window.Title}' Handle={window.Handle} Process='{window.ProcessName}' Scene='{scene?.Title ?? "NEW"}'");
-#endif
+			else
+			{
+				Log.Scene("Switching to existing scene", scene, window);
+			}
 
 			await SwitchTo(scene);
 		}
@@ -382,12 +409,18 @@ namespace StageManager
 		{
 			// Keep persistent windows (e.g. Teams meeting pop-ups) outside of scene logic.
 			if (IsPersistentWindow(window))
+			{
+				Log.Window("SCENE", "New persistent window, skipping", window);
 				return;
+			}
 
 			// Only create/switch scenes for windows that are actually focused, not just created
 			// This prevents scene creation for new windows that don't have focus yet
 			if (!window.IsFocused)
+			{
+				Log.Window("SCENE", "New window not focused, skipping", window);
 				return;
+			}
 
 			// Use the group key (process id) consistently to guarantee a new process -> new scene
 			var key = GetWindowGroupKey(window);
@@ -397,11 +430,13 @@ namespace StageManager
 			if (existentScene is null)
 			{
 				_scenes.Add(scene);
+				Log.Scene("New window → new scene created", scene, window);
 				SceneChanged?.Invoke(this, new SceneChangedEventArgs(scene, window, ChangeType.Created));
 			}
 			else
 			{
 				scene.Add(window);
+				Log.Scene("New window → added to existing scene", scene, window);
 				SceneChanged?.Invoke(this, new SceneChangedEventArgs(scene, window, ChangeType.Updated));
 			}
 
@@ -447,10 +482,7 @@ namespace StageManager
 			var now = DateTime.Now;
 			if ((now - _lastFocusChange).TotalMilliseconds <100) // Less than100ms since last focus change
 			{
-				// DEBUG: Log rapid focus changes to identify system vs user interaction
-#if DEBUG
-				Debug.WriteLine($"[FOCUS] RAPID focus change detected: {now:HH:mm:ss.fff}");
-#endif
+				Log.Info("FOCUS", "Rapid focus change detected, filtering");
 				_lastFocusChange = now;
 				return true; // This is a rapid focus change
 			}
@@ -483,21 +515,24 @@ namespace StageManager
 		public async Task SwitchTo(Scene? scene)
 		{
 			if (object.Equals(scene, _current))
+			{
+				Log.Info("SWITCH", $"Already on scene '{scene?.Title}', skipping");
 				return;
+			}
 
 			if (IsReentrancy(scene))
+			{
+				Log.Info("SWITCH", $"Reentrancy blocked for scene '{scene?.Title}'");
 				return;
+			}
+
+			Log.Info("SWITCH", $"SwitchTo START: '{_current?.Title}' → '{scene?.Title ?? "(desktop)"}'");
 
 			IWindow focusCandidate = null;
 
 			try
 			{
 				_suspend = true;
-
-				// DEBUG: Log scene switching start
-#if DEBUG
-				Debug.WriteLine($"[SCENE] SwitchTo START: TargetScene='{scene?.Title}' Current='{_current?.Title}'");
-#endif
 
 				// Determine the window that currently has the keyboard focus (foreground).
 				var foregroundHandle = Win32.GetForegroundWindow();
@@ -516,39 +551,39 @@ namespace StageManager
 					s.IsSelected = s.Equals(scene);
 				}
 
-				// DEBUG: Log windows being hidden
-#if DEBUG
-				Debug.WriteLine($"[SCENE] Hiding {otherWindows.Length} windows: {string.Join(", ", otherWindows.Select(w => $"{w.Title}({w.Handle})"))}");
-#endif
-
-				// Phase1: start fading out windows that do NOT belong to the target scene.
+				Log.Info("SWITCH", $"Hiding {otherWindows.Length} windows");
 				foreach (var o in otherWindows)
+				{
+					Log.Window("HIDE", "Hiding", o);
 					WindowStrategy.Hide(o);
+				}
 
 				// Phase2: bring in target-scene windows.
 				if (scene is object)
 				{
-					// DEBUG: Log windows being shown
-#if DEBUG
-					Debug.WriteLine($"[SCENE] Showing {scene.Windows.Count()} windows: {string.Join(", ", scene.Windows.Select(w => $"{w.Title}({w.Handle})"))}");
-#endif
-
+					Log.Info("SWITCH", $"Showing {scene.Windows.Count()} windows in target scene");
 					foreach (var w in scene.Windows)
 					{
 						// Option1: Restore-then-clear for any minimized window in the active scene
 						if (w.IsMinimized)
+						{
+							Log.Window("SHOW", "Restoring minimized", w);
 							w.ShowNormal();
+						}
 
+						Log.Window("SHOW", "Showing", w);
 						// Always clear any previous opacity/click-through for active scene windows
 						WindowStrategy.Show(w);
 					}
 
-					// Determine which window should get focus after restore – pick the last 
+					// Determine which window should get focus after restore – pick the last
 					// focused window if it belongs to the scene and is not minimised, otherwise the first visible one.
 					if (_lastFocusedWindow is object && scene.Windows.Contains(_lastFocusedWindow) && !_lastFocusedWindow.IsMinimized)
 						focusCandidate = _lastFocusedWindow;
 					else
 						focusCandidate = scene.Windows.FirstOrDefault(w => !w.IsMinimized);
+
+					Log.Window("SWITCH", "Focus candidate", focusCandidate ?? scene.Windows.FirstOrDefault());
 				}
 
 				CurrentSceneSelectionChanged?.Invoke(this, new CurrentSceneSelectionChangedEventArgs(prior, _current));
@@ -558,14 +593,20 @@ namespace StageManager
 					_lastScene = prior;
 					// Only show desktop icons if the setting is enabled
 					if (_hideDesktopIcons)
+					{
+						Log.Info("DESKTOP", "Showing desktop icons (switched to desktop view)");
 						_desktop.ShowIcons();
+					}
 				}
 				else
 				{
 					_lastScene = null;
 					// Only hide desktop icons if the setting is enabled
 					if (_hideDesktopIcons)
+					{
+						Log.Info("DESKTOP", "Hiding desktop icons (switched to scene)");
 						_desktop.HideIcons();
+					}
 				}
 			}
 			finally
@@ -575,22 +616,21 @@ namespace StageManager
 				// Apply focus once suspension lifted
 				if (focusCandidate is object)
 					focusCandidate.Focus();
+
+				Log.Info("SWITCH", $"SwitchTo END: now on '{_current?.Title ?? "(desktop)"}'");
 			}
 		}
 
 		public Task MoveWindow(Scene sourceScene, IWindow window, Scene targetScene)
 		{
-#if DEBUG
-			// Capture scene titles before any mutation for meaningful debug output
-			string sourceTitle = sourceScene?.Title;
-			string targetTitle = targetScene?.Title;
-#endif
 			try
 			{
 				_suspend = true;
 
 				if (sourceScene is null || sourceScene.Equals(targetScene))
 					return Task.CompletedTask;
+
+				Log.Window("MOVE", $"Moving from '{sourceScene.Title}' → '{targetScene.Title}'", window);
 
 				sourceScene.Remove(window);
 				targetScene.Add(window);
@@ -600,23 +640,20 @@ namespace StageManager
 
 				if (!sourceScene.Windows.Any())
 				{
-#if DEBUG
-					if (DEBUG_SCENE_MERGE)
-					{
-						System.Diagnostics.Debug.WriteLine($"[SceneMerge] Merged scene '{sourceTitle}' into '{targetTitle}' – source scene removed");
-					}
-#endif
+					Log.Scene("Source scene empty after move, removing", sourceScene);
 					_scenes.Remove(sourceScene);
 					SceneChanged?.Invoke(this, new SceneChangedEventArgs(sourceScene, window, ChangeType.Removed));
 				}
 
 				if (targetScene.Equals(_current))
 				{
+					Log.Window("MOVE", "Target is current scene, showing window", window);
 					WindowStrategy.Show(window);
 					window.Focus();
 				}
 				else
 				{
+					Log.Window("MOVE", "Target is not current scene, hiding window", window);
 					WindowStrategy.Hide(window);
 
 					// reset window position after move so that the window is back at the starting position on the new scene
@@ -651,7 +688,10 @@ namespace StageManager
 			var window = sourceScene.Windows.LastOrDefault();
 
 			if (window is object)
+			{
+				Log.Window("DRAG", $"Pulling window from '{sourceScene.Title}' into '{_current.Title}'", window);
 				await MoveWindow(sourceScene, window, _current).ConfigureAwait(false);
+			}
 		}
 
 		private IEnumerable<IWindow> GetSceneableWindows() => WindowsManager?.Windows?.Where(w => !IsPersistentWindow(w) && w.CanLayout && !string.IsNullOrEmpty(w.ProcessFileName) && !string.IsNullOrEmpty(w.Title));
@@ -666,12 +706,35 @@ namespace StageManager
 					.GroupBy(GetWindowGroupKey)
 					.Select(group => new Scene(group.Key, group.ToArray()))
 					.ToList();
+
+				Log.Info("STARTUP", $"Initial scenes: {_scenes.Count}");
+				foreach (var scene in _scenes)
+					Log.Scene("Initial scene", scene);
 			}
 
 			return _scenes;
 		}
 
+		public bool IsCurrentScene(Scene scene) => object.Equals(scene, _current);
+
 		public IEnumerable<IWindow> GetCurrentWindows() => _current?.Windows ?? GetSceneableWindows();
+
+		/// <summary>
+		/// Instantly hides all windows in the current scene (alpha→0) without doing a full SwitchTo.
+		/// Used by the transition animation so the outgoing placeholder covers the real window.
+		/// </summary>
+		public void HideCurrentSceneWindows()
+		{
+			if (_current == null)
+			{
+				Log.Info("SWITCH", "Pre-hide: no current scene, nothing to hide");
+				return;
+			}
+			var count = _current.Windows.Count();
+			Log.Info("SWITCH", $"Pre-hiding {count} windows in '{_current.Title}' for animation");
+			foreach (var w in _current.Windows)
+				WindowStrategy.Hide(w);
+		}
 
 		/// <summary>
 		/// Shows desktop icons immediately (used when setting is disabled)

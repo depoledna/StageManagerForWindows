@@ -106,6 +106,7 @@ namespace StageManager.Native
 		public Task Start()
 		{
 			_active = true;
+			Log.Info("STARTUP", "WindowsManager starting, registering hooks...");
 
 			var currentProcess = Process.GetCurrentProcess();
 			_currentProcessId = currentProcess.Id;
@@ -138,6 +139,7 @@ namespace StageManager.Native
 			thread.Name = "WindowsManager";
 			thread.Start();
 
+			Log.Info("STARTUP", $"WindowsManager started, tracking {_windows.Count} windows");
 			return Task.CompletedTask;
 		}
 
@@ -344,6 +346,7 @@ namespace StageManager.Native
 					window.WindowClosed += (sender) => HandleWindowClosed(sender);
 
 					_windows[handle] = window;
+					Log.Window("TRACK", "Registered", window);
 
 					if (emitEvent)
 					{
@@ -361,6 +364,7 @@ namespace StageManager.Native
 			if (_windows.ContainsKey(handle))
 			{
 				var window = _windows[handle];
+				Log.Window("TRACK", "Unregistered", window);
 				_windows.Remove(handle);
 				HandleWindowRemove(window);
 			}

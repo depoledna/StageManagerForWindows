@@ -1,0 +1,14 @@
+<Window
+    x:Class="StageManager.Animations.TransitionOverlayWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    WindowStyle="None"
+    AllowsTransparency="True"
+    Background="Transparent"
+    Topmost="True"
+    ShowInTaskbar="False"
+    ShowActivated="False"
+    Focusable="False"
+    ResizeMode="NoResize">
+    <Canvas x:Name="AnimationCanvas" />
+</Window>
