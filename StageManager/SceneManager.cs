@@ -22,7 +22,6 @@ namespace StageManager
 		private List<Scene> _scenes;
 		private Scene _current;
 		private bool _suspend = false;
-		private Guid? _reentrancyLockSceneId;
 		private Scene _lastScene; // remembers the scene that was active before desktop view
 		private DateTime _lastDesktopToggle = DateTime.MinValue;
 		private IWindow _lastFocusedWindow;
@@ -454,28 +453,6 @@ namespace StageManager
 		/// </summary>
 		/// <param name="scene"></param>
 		/// <returns></returns>
-		private bool IsReentrancy(Scene? scene)
-		{
-			if (scene is null)
-				return false;
-
-			if (Guid.Equals(scene.Id, _reentrancyLockSceneId))
-				return true;
-
-			if (_current is object)
-			{
-				_reentrancyLockSceneId = _current.Id;
-
-				Task.Run(async () =>
-				{
-					await Task.Delay(1000).ConfigureAwait(false);
-					_reentrancyLockSceneId = null;
-				}).SafeFireAndForget();
-			}
-
-			return false;
-		}
-
 		/// <summary>
 		/// Determines if focus changes are happening too rapidly to indicate system vs user interaction
 		/// This helps prevent scene switching loops from automatic focus changes
@@ -521,12 +498,6 @@ namespace StageManager
 			if (object.Equals(scene, _current))
 			{
 				Log.Info("SWITCH", $"Already on scene '{scene?.Title}', skipping");
-				return false;
-			}
-
-			if (IsReentrancy(scene))
-			{
-				Log.Info("SWITCH", $"Reentrancy blocked for scene '{scene?.Title}'");
 				return false;
 			}
 

@@ -480,6 +480,7 @@ namespace StageManager
 						SceneManager.PopWindowFrom(_mouseDownScene.Scene).SafeFireAndForget();
 					});
 				}
+				_mouseDownScene = null;
 			}
 		}
 
