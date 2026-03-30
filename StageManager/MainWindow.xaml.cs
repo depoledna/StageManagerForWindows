@@ -104,73 +104,76 @@ namespace StageManager
 			SwitchSceneCommand = new ActionCommand(async model =>
 			{
 				var sceneModel = (SceneModel)model;
-
-				// Block entire command while a transition or drag is in flight
-				if (_sceneTransitionAnimator.IsAnimating || _sidebarDragGhost.IsActive || IsSidebarDragging || (_dragDropManager?.IsDragging ?? false))
-				{
-					Log.Info("TRANSITION", $"BLOCKED: click on '{sceneModel.Title}' while animation/drag in progress");
-					return;
-				}
-
-				// Bail out if already on this scene (avoids destructive setup with no matching SwitchTo)
-				if (SceneManager != null && SceneManager.IsCurrentScene(sceneModel.Scene))
-				{
-					Log.Info("TRANSITION", $"Already on '{sceneModel.Title}', skipping");
-					return;
-				}
-
-				var dpi = GetDpiScale();
-				Log.Action($"Scene switch: '{_removedCurrentScene?.Title ?? "(none)"}' → '{sceneModel.Title}' | scenes={Scenes.Count} dpi={dpi.X:F2},{dpi.Y:F2}");
-
-				// Silently restore any minimized incoming windows so they have real positions
-				SceneManager.RestoreMinimizedInvisibly(sceneModel.Scene);
-
-				var sidebarSlot = GetSceneThumbnailScreenBounds(sceneModel);
-				var incomingTarget = GetSceneWindowBounds(sceneModel);
-				Log.Info("TRANSITION", $"Bounds: sidebarSlot={sidebarSlot} incomingTarget={incomingTarget}");
-
-				// Outgoing: current scene flies from its window position → the sidebar slot
-				var outgoingModel = _removedCurrentScene;
-				var outgoingSource = Rect.Empty;
-				if (outgoingModel != null)
-					outgoingSource = GetCurrentSceneWindowBounds();
-				Log.Info("TRANSITION", $"Outgoing: model={outgoingModel != null} source={outgoingSource}");
-
-				// Hide outgoing windows immediately (placeholder covers the transition)
-				if (outgoingSource != Rect.Empty)
-				{
-					Log.Info("TRANSITION", "Pre-hiding current scene windows");
-					SceneManager.HideCurrentSceneWindows();
-				}
-
-				// Hide the clicked sidebar item but reserve its space so other items don't shift
-				Log.Info("TRANSITION", $"Hiding sidebar item '{sceneModel.Title}' (reserving space)");
-				sceneModel.IsHiddenButReserved = true;
-				sceneModel.IsVisible = false;
-
-				if (sidebarSlot != Rect.Empty && incomingTarget != Rect.Empty)
-				{
-					Log.Info("TRANSITION", "Starting animation");
-					await _sceneTransitionAnimator.AnimateSceneTransitionAsync(
-						GetWorkAreaBounds(),
-						sidebarSlot, incomingTarget, sceneModel,
-						outgoingSource, sidebarSlot, outgoingModel);
-					Log.Info("TRANSITION", "Animation completed");
-				}
-				else
-				{
-					Log.Info("TRANSITION", $"Skipping animation: sidebarSlot={sidebarSlot == Rect.Empty} incomingTarget={incomingTarget == Rect.Empty}");
-				}
-
-				Log.Info("TRANSITION", "Calling SwitchTo");
-				var switched = await SceneManager!.SwitchTo(sceneModel.Scene);
-				if (!switched)
-				{
-					Log.Info("TRANSITION", "SwitchTo blocked, restoring sidebar state");
-					SyncVisibilityByUpdatedTimeStamp();
-				}
-				Log.Info("TRANSITION", $"SwitchTo completed, switched={switched} scenes={Scenes.Count}");
+				await AnimatedSwitchTo(sceneModel.Scene);
 			});
+		}
+
+		private async Task<bool> AnimatedSwitchTo(Scene scene)
+		{
+			// Block while a transition or drag is in flight
+			if (_sceneTransitionAnimator.IsAnimating || _sidebarDragGhost.IsActive || IsSidebarDragging || (_dragDropManager?.IsDragging ?? false))
+			{
+				Log.Info("TRANSITION", $"BLOCKED: switch to '{scene?.Title}' while animation/drag in progress");
+				return false;
+			}
+
+			if (SceneManager != null && SceneManager.IsCurrentScene(scene))
+			{
+				Log.Info("TRANSITION", $"Already on '{scene?.Title}', skipping");
+				return false;
+			}
+
+			var sceneModel = AllScenes.FirstOrDefault(s => s?.Id == scene?.Id);
+			if (sceneModel == null)
+			{
+				Log.Info("TRANSITION", $"No sidebar model for '{scene?.Title}', instant switch");
+				return await SceneManager!.SwitchTo(scene);
+			}
+
+			var dpi = GetDpiScale();
+			Log.Action($"Scene switch: '{_removedCurrentScene?.Title ?? "(none)"}' → '{sceneModel.Title}' | scenes={Scenes.Count} dpi={dpi.X:F2},{dpi.Y:F2}");
+
+			SceneManager.RestoreMinimizedInvisibly(sceneModel.Scene);
+
+			var sidebarSlot = GetSceneThumbnailScreenBounds(sceneModel);
+			var incomingTarget = GetSceneWindowBounds(sceneModel);
+			Log.Info("TRANSITION", $"Bounds: sidebarSlot={sidebarSlot} incomingTarget={incomingTarget}");
+
+			var outgoingModel = _removedCurrentScene;
+			var outgoingSource = Rect.Empty;
+			if (outgoingModel != null)
+				outgoingSource = GetCurrentSceneWindowBounds();
+			Log.Info("TRANSITION", $"Outgoing: model={outgoingModel != null} source={outgoingSource}");
+
+			if (outgoingSource != Rect.Empty)
+			{
+				Log.Info("TRANSITION", "Pre-hiding current scene windows");
+				SceneManager.HideCurrentSceneWindows();
+			}
+
+			Log.Info("TRANSITION", $"Hiding sidebar item '{sceneModel.Title}' (reserving space)");
+			sceneModel.IsHiddenButReserved = true;
+			sceneModel.IsVisible = false;
+
+			if (sidebarSlot != Rect.Empty && incomingTarget != Rect.Empty)
+			{
+				Log.Info("TRANSITION", "Starting animation");
+				await _sceneTransitionAnimator.AnimateSceneTransitionAsync(
+					GetWorkAreaBounds(),
+					sidebarSlot, incomingTarget, sceneModel,
+					outgoingSource, sidebarSlot, outgoingModel);
+				Log.Info("TRANSITION", "Animation completed");
+			}
+
+			Log.Info("TRANSITION", "Calling SwitchTo");
+			var switched = await SceneManager!.SwitchTo(scene);
+			if (!switched)
+			{
+				Log.Info("TRANSITION", "SwitchTo blocked, restoring sidebar state");
+				SyncVisibilityByUpdatedTimeStamp();
+			}
+			Log.Info("TRANSITION", $"SwitchTo completed, switched={switched} scenes={Scenes.Count}");
+			return switched;
 		}
 
 		protected override void OnInitialized(EventArgs e)
@@ -243,6 +246,7 @@ namespace StageManager
 
 			SceneManager.SceneChanged += SceneManager_SceneChanged;
 			SceneManager.CurrentSceneSelectionChanged += SceneManager_CurrentSceneSelectionChanged;
+			SceneManager.AnimatedSwitch = scene => Dispatcher.InvokeAsync(() => AnimatedSwitchTo(scene)).Task.Unwrap();
 
 			// Wire up drag-and-drop manager
 			_dragDropManager = new DragDropManager(
@@ -698,14 +702,20 @@ namespace StageManager
 				Log.Info("DRAG", "Sidebar drag: restored minimized window");
 			}
 			Win32Helper.SetAlpha(_sidebarDragWindow.Handle, 255);
-			Log.Info("DRAG", "Sidebar drag: real window shown (alpha→255)");
+			Win32.SetWindowPos(_sidebarDragWindow.Handle, Win32.HWND_TOPMOST,
+				0, 0, 0, 0,
+				Win32.SetWindowPosFlags.DoNotActivate | Win32.SetWindowPosFlags.IgnoreMove | Win32.SetWindowPosFlags.IgnoreResize);
+			Log.Info("DRAG", "Sidebar drag: real window shown (alpha→255, topmost)");
 		}
 
 		private void HideSidebarDragRealWindow()
 		{
 			if (_sidebarDragWindow == null) return;
+			Win32.SetWindowPos(_sidebarDragWindow.Handle, Win32.HWND_NOTOPMOST,
+				0, 0, 0, 0,
+				Win32.SetWindowPosFlags.DoNotActivate | Win32.SetWindowPosFlags.IgnoreMove | Win32.SetWindowPosFlags.IgnoreResize);
 			Win32Helper.SetAlpha(_sidebarDragWindow.Handle, 0);
-			Log.Info("DRAG", "Sidebar drag: real window hidden (alpha→0)");
+			Log.Info("DRAG", "Sidebar drag: real window hidden (alpha→0, topmost removed)");
 		}
 
 		#endregion

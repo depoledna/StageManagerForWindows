@@ -27,6 +27,11 @@ namespace StageManager
 		private IWindow _lastFocusedWindow;
 		private DateTime _lastFocusChange = DateTime.MinValue; // Track rapid focus changes
 
+		/// <summary>
+		/// When set, focus-triggered scene switches use this delegate instead of calling SwitchTo directly.
+		/// MainWindow sets this to inject the transition animation.
+		/// </summary>
+		public Func<Scene, Task<bool>> AnimatedSwitch { get; set; }
 
 		public event EventHandler<SceneChangedEventArgs> SceneChanged;
 		public event EventHandler<CurrentSceneSelectionChangedEventArgs> CurrentSceneSelectionChanged;
@@ -405,7 +410,10 @@ namespace StageManager
 				Log.Scene("Switching to existing scene", scene, window);
 			}
 
-			await SwitchTo(scene);
+			if (AnimatedSwitch != null)
+				await AnimatedSwitch(scene);
+			else
+				await SwitchTo(scene);
 		}
 
 		private async Task SwitchToSceneByNewWindow(IWindow window)

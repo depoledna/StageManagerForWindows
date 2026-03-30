@@ -148,6 +148,7 @@ namespace StageManager.Native.PInvoke
 		public static extern bool ShowWindowAsync(IntPtr hWnd, SW nCmdShow);
 
         public static IntPtr HWND_TOPMOST = new IntPtr(-1);
+        public static IntPtr HWND_NOTOPMOST = new IntPtr(-2);
 
 		public enum SW
 		{
