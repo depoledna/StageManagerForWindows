@@ -10,6 +10,7 @@ using StageManager.Native.PInvoke;
 using StageManager.Native.Interop;
 using StageManager.Native.Window;
 using System;
+using System.IO;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -63,6 +64,7 @@ namespace StageManager
 		private DragDropManager _dragDropManager;
 		private readonly DragGhostWindow _dragGhostWindow = new DragGhostWindow();
 		private readonly IconOverlayManager _iconOverlay = new();
+		private readonly UpdateService _updateService = new();
 
 		public event PropertyChangedEventHandler PropertyChanged;
 
@@ -217,6 +219,7 @@ namespace StageManager
 			_sceneTransitionAnimator?.Dispose();
 			_dragGhostWindow?.Dispose();
 			_iconOverlay?.Dispose();
+			_updateService?.Dispose();
 
 			base.OnClosed(e);
 		}
@@ -1021,6 +1024,115 @@ namespace StageManager
 		private void MenuItem_ProjectPage_Click(object sender, RoutedEventArgs e)
 		{
 			NavigateToProjectPage();
+		}
+
+		private enum UpdateState { Idle, Checking, UpToDate, Available, Downloading, Ready, Error }
+
+		private UpdateState _updateState = UpdateState.Idle;
+		private UpdateInfo? _availableUpdate;
+		private double _downloadProgress;
+		private string? _downloadedPath;
+		private readonly string _currentVersionString = UpdateService.GetCurrentVersion().ToString();
+
+		public string AppHeaderText => $"Stage Manager v{_currentVersionString}";
+
+		public string UpdateMenuText => _updateState switch
+		{
+			UpdateState.Idle => "Check for updates",
+			UpdateState.Checking => "Checking...",
+			UpdateState.UpToDate => "Up to date",
+			UpdateState.Available => $"Update to {_availableUpdate!.TagName}",
+			UpdateState.Downloading => $"Downloading...  {_downloadProgress:P0}",
+			UpdateState.Ready => "Restart to update",
+			UpdateState.Error => "Update failed \u00b7 Retry",
+			_ => "Check for updates"
+		};
+
+		private void SetUpdateState(UpdateState state)
+		{
+			_updateState = state;
+			RaisePropertyChanged(nameof(UpdateMenuText));
+		}
+
+		private async void MenuItem_CheckForUpdates_Click(object sender, RoutedEventArgs e)
+		{
+			switch (_updateState)
+			{
+				case UpdateState.Idle:
+				case UpdateState.UpToDate:
+				case UpdateState.Error:
+					await PerformUpdateCheckAsync();
+					break;
+				case UpdateState.Available:
+					await PerformDownloadAsync();
+					break;
+				case UpdateState.Ready:
+					PerformApplyAndRestart();
+					break;
+			}
+		}
+
+		private async Task PerformUpdateCheckAsync()
+		{
+			SetUpdateState(UpdateState.Checking);
+			try
+			{
+				var update = await _updateService.CheckForUpdateAsync();
+				if (update is null)
+				{
+					SetUpdateState(UpdateState.UpToDate);
+				}
+				else
+				{
+					_availableUpdate = update;
+					SetUpdateState(UpdateState.Available);
+				}
+			}
+			catch (Exception ex)
+			{
+				Log.Fatal("UPDATE", $"Update check failed: {ex}");
+				SetUpdateState(UpdateState.Error);
+			}
+		}
+
+		private async Task PerformDownloadAsync()
+		{
+			if (_availableUpdate is null) return;
+			SetUpdateState(UpdateState.Downloading);
+			try
+			{
+				var progress = new Progress<double>(p =>
+				{
+					_downloadProgress = p;
+					RaisePropertyChanged(nameof(UpdateMenuText));
+				});
+
+				_downloadedPath = await _updateService.DownloadUpdateAsync(_availableUpdate, progress);
+				SetUpdateState(UpdateState.Ready);
+			}
+			catch (Exception ex)
+			{
+				Log.Fatal("UPDATE", $"Update download failed: {ex}");
+				SetUpdateState(UpdateState.Error);
+			}
+		}
+
+		private void PerformApplyAndRestart()
+		{
+			if (_downloadedPath is null) return;
+			try
+			{
+				if (trayIcon.ContextMenu is { IsOpen: true } menu)
+					menu.IsOpen = false;
+				var snapshotPath = SceneSnapshot.Save(SceneManager.CreateSnapshot());
+				UpdateService.ApplyUpdate(_downloadedPath);
+				UpdateService.LaunchAndExit(snapshotPath);
+			}
+			catch (Exception ex)
+			{
+				Log.Fatal("UPDATE", $"Update apply failed: {ex}");
+				SetUpdateState(UpdateState.Error);
+			}
 		}
 
 		private void MenuItem_Quit_Click(object sender, RoutedEventArgs e)

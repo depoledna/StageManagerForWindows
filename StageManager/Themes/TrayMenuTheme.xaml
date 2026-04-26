@@ -71,6 +71,24 @@
         </Setter>
     </Style>
 
+    <!-- MenuItem: non-interactive label (app header / version) -->
+    <Style x:Key="TrayMenuLabelStyle" TargetType="MenuItem">
+        <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}"/>
+        <Setter Property="FontFamily" Value="Segoe UI"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="IsHitTestVisible" Value="False"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="MenuItem">
+                    <Border Background="Transparent" Padding="12,6,10,2" Margin="2,0">
+                        <ContentPresenter ContentSource="Header" VerticalAlignment="Center"/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- Separator: thin themed line -->
     <Style x:Key="TrayMenuSeparatorStyle" TargetType="Separator">
         <Setter Property="Template">

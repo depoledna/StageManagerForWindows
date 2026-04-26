@@ -108,6 +108,10 @@
                     Opened="ContextMenu_Opened"
                     Closed="ContextMenu_Closed">
                     <MenuItem
+                        Style="{StaticResource TrayMenuLabelStyle}"
+                        Header="{Binding AppHeaderText}" />
+                    <Separator Style="{StaticResource TrayMenuSeparatorStyle}" />
+                    <MenuItem
                         Style="{StaticResource TrayMenuItemStyle}"
                         Header="Start with Windows"
                         IsCheckable="True"
@@ -117,10 +121,16 @@
                         Header="Hide desktop icons"
                         IsCheckable="True"
                         IsChecked="{Binding HideDesktopIcons, Mode=TwoWay}" />
+                    <Separator Style="{StaticResource TrayMenuSeparatorStyle}" />
                     <MenuItem
                         Style="{StaticResource TrayMenuItemStyle}"
                         Header="Project page"
                         Click="MenuItem_ProjectPage_Click" />
+                    <MenuItem
+                        Style="{StaticResource TrayMenuItemStyle}"
+                        Header="{Binding UpdateMenuText}"
+                        StaysOpenOnClick="True"
+                        Click="MenuItem_CheckForUpdates_Click" />
                     <Separator Style="{StaticResource TrayMenuSeparatorStyle}" />
                     <MenuItem
                         Style="{StaticResource TrayMenuItemStyle}"

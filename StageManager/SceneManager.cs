@@ -733,12 +733,22 @@ namespace StageManager
 			{
 				if (_scenes is null)
 				{
-					_scenes = GetSceneableWindows()
-						// Include all windows during initial startup (including minimized ones) for automatic scene population
-						.Where(w => Win32.IsWindowVisible(w.Handle) || w.IsMinimized)
-						.GroupBy(GetWindowGroupKey)
-						.Select(group => new Scene(group.Key, group.ToArray()))
-						.ToList();
+					var restorePath = App.RestoreScenesPath;
+					if (restorePath != null)
+					{
+						_scenes = RestoreScenesFromSnapshot(restorePath);
+						UpdateService.CleanupStagingFolder();
+					}
+
+					if (_scenes is null)
+					{
+						_scenes = GetSceneableWindows()
+							// Include all windows during initial startup (including minimized ones) for automatic scene population
+							.Where(w => Win32.IsWindowVisible(w.Handle) || w.IsMinimized)
+							.GroupBy(GetWindowGroupKey)
+							.Select(group => new Scene(group.Key, group.ToArray()))
+							.ToList();
+					}
 
 					Log.Info("STARTUP", $"Initial scenes: {_scenes.Count}");
 					foreach (var scene in _scenes)
@@ -747,6 +757,69 @@ namespace StageManager
 
 				return _scenes.ToList();
 			}
+		}
+
+		public SceneSnapshot.Snapshot CreateSnapshot()
+		{
+			Scene[] snap;
+			Scene? currentScene;
+			lock (_scenesLock)
+			{
+				snap = _scenes?.ToArray() ?? Array.Empty<Scene>();
+				currentScene = _current;
+			}
+
+			var activeHandles = currentScene?.Windows.Select(w => (long)w.Handle).ToArray() ?? Array.Empty<long>();
+			var sceneEntries = snap.Select(s => new SceneSnapshot.SceneEntry(
+				s.Key,
+				s.Windows.Select(w => (long)w.Handle).ToArray()
+			)).ToArray();
+
+			return new SceneSnapshot.Snapshot(activeHandles, sceneEntries);
+		}
+
+		private List<Scene>? RestoreScenesFromSnapshot(string path)
+		{
+			var snapshot = SceneSnapshot.Load(path);
+			if (snapshot is null)
+			{
+				Log.Info("STARTUP", "Scene snapshot missing or corrupt, falling back to default grouping");
+				return null;
+			}
+
+			var allWindows = GetSceneableWindows()
+				.Where(w => Win32.IsWindowVisible(w.Handle) || w.IsMinimized)
+				.ToDictionary(w => (long)w.Handle);
+
+			var claimed = new HashSet<long>();
+			var scenes = new List<Scene>();
+
+			foreach (var entry in snapshot.Scenes)
+			{
+				var validWindows = entry.Handles
+					.Where(h => Win32.IsWindow((IntPtr)h) && allWindows.ContainsKey(h))
+					.Select(h => { claimed.Add(h); return allWindows[h]; })
+					.ToArray();
+
+				if (validWindows.Length > 0)
+				{
+					scenes.Add(new Scene(entry.Key, validWindows));
+					Log.Info("STARTUP", $"Restored scene '{entry.Key}' with {validWindows.Length}/{entry.Handles.Length} windows");
+				}
+			}
+
+			// Unclaimed windows get default PID grouping
+			var unclaimed = allWindows
+				.Where(kv => !claimed.Contains(kv.Key))
+				.Select(kv => kv.Value);
+
+			var defaultScenes = unclaimed
+				.GroupBy(GetWindowGroupKey)
+				.Select(g => new Scene(g.Key, g.ToArray()));
+			scenes.AddRange(defaultScenes);
+
+			Log.Info("STARTUP", $"Scene restore complete: {scenes.Count} scenes ({claimed.Count} windows restored)");
+			return scenes.Count > 0 ? scenes : null;
 		}
 
 		public bool IsCurrentScene(Scene scene) => object.Equals(scene, _current);

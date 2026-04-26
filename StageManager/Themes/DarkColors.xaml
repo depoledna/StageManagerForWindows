@@ -6,6 +6,7 @@
     <SolidColorBrush x:Key="ItemHoverBrush" Color="#FF2D2D2D"/>
     <SolidColorBrush x:Key="ItemPressedBrush" Color="#FF383838"/>
     <SolidColorBrush x:Key="PrimaryTextBrush" Color="#FFFFFFFF"/>
+    <SolidColorBrush x:Key="SecondaryTextBrush" Color="#FF999999"/>
     <SolidColorBrush x:Key="SeparatorBrush" Color="#FF2E2E2E"/>
     <SolidColorBrush x:Key="SectionBackgroundBrush" Color="#FF252525"/>
     <SolidColorBrush x:Key="AccentBrush" Color="#FF0078D4"/>

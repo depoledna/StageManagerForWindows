@@ -27,6 +27,22 @@ public static class ThemeManager
         merged.Add(newColors);
     }
 
+    public static void StartListening()
+    {
+        SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
+    }
+
+    public static void StopListening()
+    {
+        SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+    }
+
+    private static void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+    {
+        if (e.Category == UserPreferenceCategory.General)
+            Application.Current?.Dispatcher.BeginInvoke(ApplyTheme);
+    }
+
     private static bool IsSystemLightTheme()
     {
         try
