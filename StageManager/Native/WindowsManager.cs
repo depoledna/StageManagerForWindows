@@ -2,10 +2,10 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using StageManager.Helpers;
 using StageManager.Native.PInvoke;
 using StageManager.Native.Window;
 
@@ -223,10 +223,7 @@ namespace StageManager.Native
 					var windowUnderCursor = Win32.WindowFromPoint(new System.Drawing.Point(cursorPt.X, cursorPt.Y));
 					if (windowUnderCursor != IntPtr.Zero)
 					{
-						var buffer = new System.Text.StringBuilder(256);
-						Win32.GetClassName(windowUnderCursor, buffer, buffer.Capacity);
-						var cls = buffer.ToString();
-						if (cls == "WorkerW" || cls == "Progman" || cls == "SysListView32" || cls == "SHELLDLL_DefView")
+						if (DesktopShellClassifier.IsDesktopShell(windowUnderCursor))
 						{
 							// Suppress false desktop clicks from drag-drop mouse-up landing on desktop behind sidebar
 							if ((DateTime.Now - _lastDragEnd).TotalMilliseconds < 300)

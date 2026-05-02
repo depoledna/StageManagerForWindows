@@ -1,8 +1,7 @@
-﻿using StageManager.Native.Window;
+using StageManager.Native.PInvoke;
+using StageManager.Native.Window;
 using System;
-using System.Runtime.InteropServices;
 using System.Collections.Generic;
-using System.Diagnostics; // Added for Dictionary
 
 namespace StageManager.Strategies
 {
@@ -12,22 +11,8 @@ namespace StageManager.Strategies
 	/// </summary>
 	internal class OpacityWindowStrategy : IWindowStrategy
 	{
-		[DllImport("user32.dll")]
-		static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
-
-		[DllImport("user32.dll")]
-		static extern int GetWindowLong(IntPtr hWnd, int nIndex);
-
-		[DllImport("user32.dll")]
-		public static extern bool SetLayeredWindowAttributes(IntPtr hwnd, uint crKey, byte bAlpha, uint dwFlags);
-
-		public const int GWL_EXSTYLE = -20;
-		public const int WS_EX_LAYERED = 0x80000;
-		public const int WS_EX_TRANSPARENT = 0x20;   // ignore mouse / hit-testing
-		public const int LWA_ALPHA = 0x2;
-
 		// Remember previous styles so we can restore them when showing again.
-		private static readonly Dictionary<IntPtr, int> _originalStyles = new();
+		private static readonly Dictionary<IntPtr, Win32.WS_EX> _originalStyles = new();
 		// Remember original on-screen position when we had to move the window off-screen
 		private static readonly Dictionary<IntPtr, (int X, int Y)> _originalPositions = new();
 
@@ -58,15 +43,15 @@ namespace StageManager.Strategies
 		private static bool ShouldSkipTransparencyForWindow(IntPtr hWnd)
 		{
 			// Skip transparency for minimized windows - let Windows handle them natively
-			if (StageManager.Native.PInvoke.Win32.IsIconic(hWnd))
+			if (Win32.IsIconic(hWnd))
 				return true;
 
 			// Skip transparency for windows that aren't visible (already hidden/destroyed)
-			if (!StageManager.Native.PInvoke.Win32.IsWindowVisible(hWnd))
+			if (!Win32.IsWindowVisible(hWnd))
 				return true;
 
 			// Skip transparency if extended style is not accessible
-			if (GetWindowLong(hWnd, GWL_EXSTYLE) == 0)
+			if ((long)Win32.GetWindowExStyleLongPtr(hWnd) == 0)
 				return true;
 
 			// Otherwise, transparency can be applied
@@ -84,7 +69,7 @@ namespace StageManager.Strategies
 
 				// For minimized windows, don't apply any transparency logic
 				// Just ensure they're in proper minimized state and return
-				if (StageManager.Native.PInvoke.Win32.IsIconic(hWnd))
+				if (Win32.IsIconic(hWnd))
 				{
 					window.ShowMinimized();
 				}
@@ -100,21 +85,19 @@ namespace StageManager.Strategies
 				// Double-check after acquiring lock
 				if (ShouldSkipTransparencyForWindow(hWnd))
 				{
-					if (StageManager.Native.PInvoke.Win32.IsIconic(hWnd))
+					if (Win32.IsIconic(hWnd))
 					{
 						window.ShowMinimized();
 					}
 					return;
 				}
 
-				var exStyle = GetWindowLong(hWnd, GWL_EXSTYLE);
-
 				// Restore original extended style if we stored one (atomically)
 				lock (_globalLock)
 				{
 					if (_originalStyles.TryGetValue(hWnd, out var original))
 					{
-						SetWindowLong(hWnd, GWL_EXSTYLE, original);
+						Win32.SetWindowStyleExLongPtr(hWnd, original);
 						_originalStyles.Remove(hWnd);
 					}
 				}
@@ -124,27 +107,22 @@ namespace StageManager.Strategies
 				{
 					if (_originalPositions.TryGetValue(hWnd, out var pos))
 					{
-						StageManager.Native.PInvoke.Win32.SetWindowPos(hWnd, IntPtr.Zero,
+						Win32.SetWindowPos(hWnd, IntPtr.Zero,
 							pos.X, pos.Y, 0, 0,
-							StageManager.Native.PInvoke.Win32.SetWindowPosFlags.IgnoreResize |
-							StageManager.Native.PInvoke.Win32.SetWindowPosFlags.DoNotActivate);
+							Win32.SetWindowPosFlags.IgnoreResize |
+							Win32.SetWindowPosFlags.DoNotActivate);
 						_originalPositions.Remove(hWnd);
 					}
 				}
 
 				// Force-remove WS_EX_TRANSPARENT (mouse-through) in case anything went wrong previously
-				int clearedStyle = GetWindowLong(hWnd, GWL_EXSTYLE) & ~WS_EX_TRANSPARENT;
-				SetWindowLong(hWnd, GWL_EXSTYLE, clearedStyle);
+				var ex = Win32.GetWindowExStyleLongPtr(hWnd);
+				Win32.SetWindowStyleExLongPtr(hWnd, ex & ~Win32.WS_EX.WS_EX_TRANSPARENT);
 
-				// Ensure WS_EX_LAYERED remains so we can control alpha smoothly
-				if ((GetWindowLong(hWnd, GWL_EXSTYLE) & WS_EX_LAYERED) == 0)
-				{
-					SetWindowLong(hWnd, GWL_EXSTYLE, GetWindowLong(hWnd, GWL_EXSTYLE) | WS_EX_LAYERED);
-				}
-
-				// Instantly set full opacity (no fade — the transition animation placeholder covers the reveal)
+				// Instantly set full opacity (no fade — the transition animation placeholder covers the reveal).
+				// Win32Helper.SetAlpha ensures WS_EX_LAYERED is set before applying alpha.
 				Log.Window("OPACITY", "Instant show alpha→255", window);
-				SetLayeredWindowAttributes(hWnd, 0, 255, LWA_ALPHA);
+				Win32Helper.SetAlpha(hWnd, 255);
 
 				// Bring window to top immediately so it's in front while fading in
 				window.BringToTop();
@@ -179,22 +157,23 @@ namespace StageManager.Strategies
 					return;
 				}
 
+				var ex = Win32.GetWindowExStyleLongPtr(hWnd);
+
 				// Store original exstyle atomically
 				lock (_globalLock)
 				{
 					if (!_originalStyles.ContainsKey(hWnd))
 					{
-						_originalStyles[hWnd] = GetWindowLong(hWnd, GWL_EXSTYLE);
+						_originalStyles[hWnd] = ex;
 					}
 				}
 
 				// Enable layered + transparent styles so we can animate alpha and disable hit-testing afterwards
-				var newStyle = GetWindowLong(hWnd, GWL_EXSTYLE) | WS_EX_LAYERED | WS_EX_TRANSPARENT;
-				SetWindowLong(hWnd, GWL_EXSTYLE, newStyle);
+				Win32.SetWindowStyleExLongPtr(hWnd, ex | Win32.WS_EX.WS_EX_LAYERED | Win32.WS_EX.WS_EX_TRANSPARENT);
 
 				// Instantly hide window by setting alpha to 0 (no fade) so there is no brief overlap
 				Log.Window("OPACITY", "Instant hide alpha→0", window);
-				SetLayeredWindowAttributes(hWnd, 0, 0, LWA_ALPHA);
+				Win32.SetLayeredWindowAttributes(hWnd, 0, 0, Win32.LWA_ALPHA);
 
 				// Keep mouse-through flag enabled so clicks pass to visible windows underneath
 				// Window remains present for live thumbnails.
@@ -212,17 +191,17 @@ namespace StageManager.Strategies
 						{
 							if (!_originalPositions.ContainsKey(hWnd))
 							{
-								StageManager.Native.PInvoke.Win32.Rect rect = new StageManager.Native.PInvoke.Win32.Rect();
-								StageManager.Native.PInvoke.Win32.GetWindowRect(hWnd, ref rect);
+								Win32.Rect rect = new Win32.Rect();
+								Win32.GetWindowRect(hWnd, ref rect);
 								_originalPositions[hWnd] = (rect.Left, rect.Top);
 							}
 						}
 
 						const int OFFSCREEN_OFFSET = 4000; // beyond typical virtual screen bounds
-						StageManager.Native.PInvoke.Win32.SetWindowPos(hWnd, IntPtr.Zero,
+						Win32.SetWindowPos(hWnd, IntPtr.Zero,
 							OFFSCREEN_OFFSET, OFFSCREEN_OFFSET, 0, 0,
-							StageManager.Native.PInvoke.Win32.SetWindowPosFlags.IgnoreResize |
-							StageManager.Native.PInvoke.Win32.SetWindowPosFlags.DoNotActivate);
+							Win32.SetWindowPosFlags.IgnoreResize |
+							Win32.SetWindowPosFlags.DoNotActivate);
 					}
 					catch { /* ignored */ }
 				}
@@ -236,7 +215,7 @@ namespace StageManager.Strategies
 		private static bool _supportsLayeredTransparency(IntPtr hWnd)
 		{
 			// Simple probe – attempt to set alpha 1 and check success
-			return SetLayeredWindowAttributes(hWnd, 0, 1, LWA_ALPHA);
+			return Win32.SetLayeredWindowAttributes(hWnd, 0, 1, Win32.LWA_ALPHA);
 		}
 	}
 }

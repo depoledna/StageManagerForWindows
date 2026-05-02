@@ -1,4 +1,5 @@
 ﻿using AsyncAwaitBestPractices;
+using StageManager.Helpers;
 using StageManager.Model;
 using StageManager.Native;
 using StageManager.Native.PInvoke;
@@ -11,7 +12,6 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Windows;
 
 namespace StageManager
@@ -24,7 +24,6 @@ namespace StageManager
 		private Scene _current;
 		private bool _suspend = false;
 		private Scene _lastScene; // remembers the scene that was active before desktop view
-		private DateTime _lastDesktopToggle = DateTime.MinValue;
 		private IWindow _lastFocusedWindow;
 		private DateTime _lastFocusChange = DateTime.MinValue; // Track rapid focus changes
 
@@ -205,10 +204,7 @@ namespace StageManager
 
 		private bool IsBlankDesktopClick(IntPtr handle)
 		{
-			// Determine window class
-			var sb = new StringBuilder(256);
-			Win32.GetClassName(handle, sb, sb.Capacity);
-			var cls = sb.ToString();
+			var cls = DesktopShellClassifier.GetClassName(handle);
 
 			// Ignore taskbar / other common shells
 			if (string.Equals(cls, "Shell_TrayWnd", StringComparison.OrdinalIgnoreCase) ||
@@ -225,27 +221,17 @@ namespace StageManager
 				return sel == IntPtr.Zero;
 			}
 
-			// Desktop background container windows (WorkerW/Progman)
-			if (string.Equals(cls, "WorkerW", StringComparison.OrdinalIgnoreCase) ||
-				string.Equals(cls, "Progman", StringComparison.OrdinalIgnoreCase))
+			// Desktop background container windows (WorkerW/Progman): blank click only when no icon selected
+			if (DesktopShellClassifier.IsDesktopBackground(handle))
 			{
-				// A click on these windows is only considered a blank desktop click when
-				// no desktop icons are currently selected. Otherwise it is an icon click.
-
-				// Find the SHELLDLL_DefView child hosting the desktop list view
 				var shell = Desktop.FindWindowEx(handle, IntPtr.Zero, "SHELLDLL_DefView", null);
-				// Within the DefView find the SysListView32 control that displays the icons
 				var listView = shell != IntPtr.Zero ? Desktop.FindWindowEx(shell, IntPtr.Zero, "SysListView32", null) : IntPtr.Zero;
-
 				return IsListViewSelectionEmpty(listView);
 			}
 
 			// Desktop icon view (list view) – ensure no icon is selected
-			if (string.Equals(cls, "SysListView32", StringComparison.OrdinalIgnoreCase) ||
-				string.Equals(cls, "SHELLDLL_DefView", StringComparison.OrdinalIgnoreCase))
-			{
+			if (DesktopShellClassifier.IsDesktopIconView(handle))
 				return IsListViewSelectionEmpty(handle);
-			}
 
 			return false;
 		}
@@ -272,16 +258,6 @@ namespace StageManager
 				Log.Info("DESKTOP", "Click on desktop icon, not blank area — ignoring", handle);
 				return;
 			}
-
-			// Debounce additional toggles happening too quickly (double-click already filtered by WindowsManager)
-			var now = DateTime.Now;
-			if ((now - _lastDesktopToggle).TotalMilliseconds <100)
-			{
-				Log.Info("DESKTOP", "Debounced desktop toggle");
-				return;
-			}
-
-			_lastDesktopToggle = now;
 
 			if (_current is null)
 			{

@@ -1,4 +1,5 @@
 ﻿using StageManager.Native.Interop;
+using StageManager.Native.PInvoke;
 using System;
 using System.Windows;
 using System.Windows.Controls;
@@ -22,7 +23,7 @@ namespace StageManager.Controls
 		private IntPtr _dwmThumbnail;
 		private Window _window;
 		private Point? _dpiScaleFactor;
-		private RECT _lastRect;
+		private Win32.Rect _lastRect;
 		private bool _hasLastRect;
 
 		public static readonly DependencyProperty PreviewHandleProperty = DependencyProperty.Register(nameof(PreviewHandle),
@@ -118,28 +119,28 @@ namespace StageManager.Controls
 				return;
 
 			var rect = ComputeDestinationRect();
-			if (_hasLastRect && rect.top == _lastRect.top && rect.left == _lastRect.left
-				&& rect.bottom == _lastRect.bottom && rect.right == _lastRect.right)
+			if (_hasLastRect && rect.Top == _lastRect.Top && rect.Left == _lastRect.Left
+				&& rect.Bottom == _lastRect.Bottom && rect.Right == _lastRect.Right)
 				return;
 
 			ApplyRect(rect);
 		}
 
-		private RECT ComputeDestinationRect()
+		private Win32.Rect ComputeDestinationRect()
 		{
 			var dpi = GetDpiScaleFactor();
 			var previewBounds = BoundsRelativeTo(this, FindWindow());
 
-			return new RECT
+			return new Win32.Rect
 			{
-				top = (int)(previewBounds.Top * dpi.Y),
-				left = (int)(previewBounds.Left * dpi.X),
-				bottom = (int)((previewBounds.Bottom - Margin.Top - Margin.Bottom) * dpi.Y) + 1,
-				right = (int)((previewBounds.Right - Margin.Left - Margin.Right) * dpi.X) + 1
+				Top = (int)(previewBounds.Top * dpi.Y),
+				Left = (int)(previewBounds.Left * dpi.X),
+				Bottom = (int)((previewBounds.Bottom - Margin.Top - Margin.Bottom) * dpi.Y) + 1,
+				Right = (int)((previewBounds.Right - Margin.Left - Margin.Right) * dpi.X) + 1
 			};
 		}
 
-		private void ApplyRect(RECT rect)
+		private void ApplyRect(Win32.Rect rect)
 		{
 			var props = new DWM_THUMBNAIL_PROPERTIES
 			{

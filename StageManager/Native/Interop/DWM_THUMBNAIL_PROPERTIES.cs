@@ -1,4 +1,5 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
+using StageManager.Native.PInvoke;
 
 // ReSharper disable FieldCanBeMadeReadOnly.Global
 // ReSharper disable  InconsistentNaming
@@ -10,8 +11,8 @@ namespace StageManager.Native.Interop
     public struct DWM_THUMBNAIL_PROPERTIES
     {
         public int dwFlags;
-        public RECT rcDestination;
-        public RECT rcSource;
+        public Win32.Rect rcDestination;
+        public Win32.Rect rcSource;
         public byte opacity;
 
         [MarshalAs(UnmanagedType.Bool, SizeConst = 4)]

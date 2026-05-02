@@ -6,12 +6,16 @@ namespace StageManager.Native.PInvoke
 {
     public static partial class Win32
     {
+        [StructLayout(LayoutKind.Sequential)]
         public struct Rect
         {
-            public int Left { get; set; }
-            public int Top { get; set; }
-            public int Right { get; set; }
-            public int Bottom { get; set; }
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+
+            public int Width => Right - Left;
+            public int Height => Bottom - Top;
         }
 
         [StructLayout(LayoutKind.Sequential)]
