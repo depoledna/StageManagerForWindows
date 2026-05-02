@@ -124,14 +124,8 @@ namespace StageManager
 
 			SwitchSceneCommand = new ActionCommand(async model =>
 			{
-				// Scene clicks are inert during filter mode — filter view is modal and only
-				// dismisses via outside-click (handled in OnMousePressed). User keeps the
-				// currently-active scene; clicking a scene preview here does nothing.
 				if (_filterProcessKey != null)
-				{
-					Log.Info("FILTER", "Scene click suppressed during filter");
-					return;
-				}
+					ClearAppFilter();
 				var sceneModel = (SceneModel)model;
 				await AnimatedSwitchTo(sceneModel.Scene);
 			});
