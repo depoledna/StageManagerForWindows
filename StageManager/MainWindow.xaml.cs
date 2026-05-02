@@ -81,6 +81,11 @@ namespace StageManager
 		private DateTime _filterClearedAt = DateTime.MinValue;
 		private static readonly TimeSpan _filterClearGrace = TimeSpan.FromMilliseconds(750);
 
+		// Flips true when the startup slide-in animation completes. Until then, OnRenderSizeChanged
+		// must NOT yank Left back to 0 — the window is intentionally parked at -Width so DWM thumbnails
+		// and scene previews stay culled while setup runs (scenes added, foreground scene switched).
+		private bool _startupSlideComplete = false;
+
 		public event PropertyChangedEventHandler PropertyChanged;
 
 		public bool EnableWindowDropToScene = false;
@@ -238,10 +243,13 @@ namespace StageManager
 			_thisHandle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
 			_lastWidth = Width;
 
-			// Start hidden — will slide in after scenes are loaded
+			// Start hidden AND parked off-screen. Opacity=0 hides WPF content but DWM live thumbnails
+			// follow window position regardless of opacity — Left=-Width keeps them culled by DWM
+			// during setup so the user only sees the final slide-in.
 			Opacity = 0;
+			Left = -Width;
 
-			StartHook();	
+			StartHook();
 		}
 
 		protected override void OnClosed(EventArgs e)
@@ -351,23 +359,41 @@ namespace StageManager
 			if (foregroundScene is object)
 				await SceneManager.SwitchTo(foregroundScene).ConfigureAwait(true);
 
-			// Position icons while sidebar is at Left=0 (correct screen coords)
-			_iconOverlay.Enabled = true;
-			RefreshIconOverlay();
-
-			// Now move off-screen and slide in
+			// All icon-overlay enable, position calc, opacity reveal, and slide-in animations happen
+			// inside a single Loaded-priority dispatcher slot. Window stays at Left=-Width with
+			// Opacity=0 throughout setup, so the user only sees the slide-in.
 			Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () =>
 			{
 				var startupDuration = TimeSpan.FromSeconds(0.5);
 				var startupEasing = new PowerEase { EasingMode = EasingMode.EaseOut };
 
+				// Force layout pass so ItemContainerGenerator has produced visual containers.
+				// Coords are computed relative to the window (TranslatePoint, not PointToScreen)
+				// since the HWND is parked at Left=-Width.
+				UpdateLayout();
+
+				_iconOverlay.Enabled = true;
+				var visible = Scenes.Where(s => s.IsVisible).ToList();
+				// Window is parked at Left=-Width during setup, so PointToScreen would offset
+				// icon coords by -Width. Use TranslatePoint (window-relative) directly — the
+				// final on-screen position is Left=0, so window-relative == screen-relative.
+				_iconOverlay.UpdateIcons(visible, sm =>
+				{
+					var c = scenesControl.ItemContainerGenerator.ContainerFromItem(sm) as FrameworkElement;
+					if (c == null) return Rect.Empty;
+					var tl = c.TranslatePoint(new Point(0, 0), this);
+					return new Rect(tl.X, tl.Y, c.ActualWidth, c.ActualHeight);
+				}, GetWorkAreaBounds());
+
+				// Reveal: alpha→1 while still off-screen, then animate Left from -Width to 0 in
+				// lockstep with the icon-overlay canvas RenderTransform (same duration + easing).
 				Opacity = 1;
-				Left = -Width;
 				_iconOverlay.SlideIn(-Width, startupDuration, startupEasing);
 
 				var slideIn = new DoubleAnimationUsingKeyFrames { Duration = new Duration(startupDuration) };
 				slideIn.KeyFrames.Add(new EasingDoubleKeyFrame(-Width, KeyTime.FromPercent(0)));
 				slideIn.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromPercent(1.0), startupEasing));
+				slideIn.Completed += (_, _) => _startupSlideComplete = true;
 				BeginAnimation(LeftProperty, slideIn);
 			});
 		}
@@ -421,10 +447,10 @@ namespace StageManager
 
 			SyncVisibilityByUpdatedTimeStamp();
 
-			// Hide sidebar when switching to desktop view
+			// Desktop view: stow scene windows but keep the scene tray visible.
 			if (args.Current is null)
 			{
-				Mode = WindowMode.OffScreen;
+				Mode = WindowMode.OnScreen;
 			}
 
 			RefreshIconOverlay();
@@ -434,7 +460,10 @@ namespace StageManager
 		{
 			base.OnRenderSizeChanged(sizeInfo);
 			var area = this.GetMonitorWorkSize();
-			this.Left = 0;
+			// Stay parked off-screen until the startup slide-in animation finishes; otherwise this
+			// firing during the initial layout pass yanks the window back to Left=0 and leaks the
+			// pre-slide visual state (scenes appearing, active scene removal, icon flicker).
+			this.Left = _startupSlideComplete ? 0 : -Width;
 			this.Top = 0;
 			this.Height = area.Height;
 			RefreshIconOverlay();
@@ -1138,7 +1167,8 @@ namespace StageManager
 
 		private void UpdateModeByWindows(IEnumerable<IWindow> windows)
 		{
-			// Keep sidebar hidden while in desktop view
+			// Freeze sidebar mode in desktop view: scene windows are stowed (alpha=0) but still
+			// report layout positions, so doesOverlap() would falsely flag overlap and hide the tray.
 			if (SceneManager?.IsDesktopView == true)
 				return;
 
