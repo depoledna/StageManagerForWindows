@@ -183,7 +183,7 @@ namespace StageManager
 				return await SceneManager!.SwitchTo(scene);
 			}
 
-			var dpi = GetDpiScale();
+			var dpi = Dpi;
 			Log.Action($"Scene switch: '{_removedCurrentScene?.Title ?? "(none)"}' → '{sceneModel.Title}' | scenes={Scenes.Count} dpi={dpi.X:F2},{dpi.Y:F2}");
 
 			SceneManager.RestoreMinimizedInvisibly(sceneModel.Scene);
@@ -308,7 +308,7 @@ namespace StageManager
 			_dragDropManager = new DragDropManager(
 				SceneManager,
 				_dragGhostWindow,
-				() => GetDpiScale(),
+				() => Dpi,
 				() => _lastWidth,
 				w => WindowToLogicalRect(w),
 				w => AllScenes.Where(s => s != null).SelectMany(s => s.Windows).FirstOrDefault(wm => wm.Handle == w.Handle)?.Icon,
@@ -555,10 +555,10 @@ namespace StageManager
 			var thisWindow = new WindowsWindow(_thisHandle);
 			var pointOnWindow = new Point(p.X - thisWindow.Location.X, p.Y - thisWindow.Location.Y);
 
-			var dpi = VisualTreeHelper.GetDpi(this);
+			var dpi = Dpi;
 
-			pointOnWindow.X /= dpi.DpiScaleX;
-			pointOnWindow.Y /= dpi.DpiScaleY;
+			pointOnWindow.X /= dpi.X;
+			pointOnWindow.Y /= dpi.Y;
 
 			SceneModel model = null;
 
@@ -647,7 +647,7 @@ namespace StageManager
 				if (_sidebarDragWindowRect == Rect.Empty)
 					_sidebarDragWindowRect = new Rect(0, 0, 800, 600);
 
-				_sidebarDragDpi = GetDpiScale();
+				_sidebarDragDpi = Dpi;
 				_sidebarDragBufferLeft = _lastWidth;
 				_sidebarDragBufferRight = _lastWidth + DragDropManager.BufferWidthLogical;
 
@@ -911,7 +911,7 @@ namespace StageManager
 		// From=0 explicit; FillBehavior.Stop reverts to style-base Opacity=0.8.
 		private static void StartEnterAnimation(FrameworkElement inner) =>
 			inner.BeginAnimation(UIElement.OpacityProperty,
-				new DoubleAnimation(0, 0.8, _filterMorphDuration) { EasingFunction = _filterEaseOut, FillBehavior = FillBehavior.Stop });
+				Anim.From(0, 0.8, _filterMorphDuration, _filterEaseOut, FillBehavior.Stop));
 
 		private void AnimateSceneExit(SceneModel s, TaskCompletionSource? tcs = null)
 		{
@@ -923,7 +923,7 @@ namespace StageManager
 				return;
 			}
 			// HoldEnd keeps Opacity=0 painted until IsVisible flips — no flash before collapse.
-			var opacityAnim = MakeFilterAnim(0, FillBehavior.HoldEnd, _filterEaseIn);
+			var opacityAnim = Anim.To(0, _filterMorphDuration, _filterEaseIn);
 			opacityAnim.Completed += (_, _) =>
 			{
 				if (CurrentFilterGen(s.Id) == gen)
@@ -940,7 +940,7 @@ namespace StageManager
 		{
 			NextFilterGen(s.Id);
 			if (TryGetSceneInnerGrid(s) is not FrameworkElement inner) return;
-			inner.BeginAnimation(UIElement.OpacityProperty, MakeFilterAnim(0.8, FillBehavior.Stop, _filterEaseOut), HandoffBehavior.SnapshotAndReplace);
+			inner.BeginAnimation(UIElement.OpacityProperty, Anim.To(0.8, _filterMorphDuration, _filterEaseOut, FillBehavior.Stop), HandoffBehavior.SnapshotAndReplace);
 
 			if (double.IsNaN(oldYAbs)) return;
 
@@ -968,11 +968,7 @@ namespace StageManager
 					tt.BeginAnimation(TranslateTransform.YProperty, null);
 					tt.Y = from;
 				}
-				var slide = new DoubleAnimation(from, 0, _filterMorphDuration)
-				{
-					EasingFunction = _filterEaseOut,
-					FillBehavior = FillBehavior.HoldEnd,
-				};
+				var slide = Anim.From(from, 0, _filterMorphDuration, _filterEaseOut);
 				tt.BeginAnimation(TranslateTransform.YProperty, slide, HandoffBehavior.SnapshotAndReplace);
 			}
 		}
@@ -987,9 +983,6 @@ namespace StageManager
 
 		private FrameworkElement? TryGetSceneItemContainer(SceneModel s)
 			=> scenesControl.ItemContainerGenerator.ContainerFromItem(s) as FrameworkElement;
-
-		private static DoubleAnimation MakeFilterAnim(double to, FillBehavior fill, IEasingFunction ease) =>
-			new DoubleAnimation(to, _filterMorphDuration) { EasingFunction = ease, FillBehavior = fill };
 
 		private int NextFilterGen(Guid id)
 		{
@@ -1156,7 +1149,7 @@ namespace StageManager
 		[System.Diagnostics.Conditional("DEBUG")]
 		private void ShowDebugDragZones()
 		{
-			var dpi = GetDpiScale();
+			var dpi = Dpi;
 			var sidebarW = _lastWidth;
 			var bufferW = DragDropManager.BufferWidthLogical;
 			var workArea = GetWorkAreaBounds();
@@ -1167,14 +1160,30 @@ namespace StageManager
 		}
 
 		/// <summary>
-		/// Gets the DPI scale factors for converting between physical and logical coordinates.
+		/// DPI scale factors for converting between physical and logical coordinates.
+		/// Cached lazily; invalidated on <see cref="OnDpiChanged"/>.
 		/// </summary>
-		private Point GetDpiScale()
+		private Point _dpi = new(1.0, 1.0);
+		private bool _dpiCached;
+
+		private Point Dpi
 		{
-			var source = PresentationSource.FromVisual(this);
-			if (source?.CompositionTarget != null)
-				return new Point(source.CompositionTarget.TransformToDevice.M11, source.CompositionTarget.TransformToDevice.M22);
-			return new Point(1.0, 1.0);
+			get
+			{
+				if (_dpiCached) return _dpi;
+				var source = PresentationSource.FromVisual(this);
+				if (source?.CompositionTarget == null)
+					return _dpi; // pre-source-init: return fallback but don't cache it
+				_dpi = new Point(source.CompositionTarget.TransformToDevice.M11, source.CompositionTarget.TransformToDevice.M22);
+				_dpiCached = true;
+				return _dpi;
+			}
+		}
+
+		protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
+		{
+			base.OnDpiChanged(oldDpi, newDpi);
+			_dpiCached = false;
 		}
 
 		/// <summary>
@@ -1188,7 +1197,7 @@ namespace StageManager
 				if (container == null)
 					return Rect.Empty;
 
-				var dpi = GetDpiScale();
+				var dpi = Dpi;
 
 				// Get screen coordinates (physical pixels) then convert to logical units
 				var topLeft = container.TranslatePoint(new Point(0, 0), this);
@@ -1222,7 +1231,7 @@ namespace StageManager
 			if (loc.Width <= 0 || loc.Height <= 0 || loc.X < -10000)
 				return Rect.Empty;
 
-			var dpi = GetDpiScale();
+			var dpi = Dpi;
 			return new Rect(loc.X / dpi.X, loc.Y / dpi.Y, loc.Width / dpi.X, loc.Height / dpi.Y);
 		}
 
@@ -1250,7 +1259,7 @@ namespace StageManager
 				if (hwndSource == null)
 					return Rect.Empty;
 
-				var dpi = GetDpiScale();
+				var dpi = Dpi;
 
 				var monitor = NativeMethods.MonitorFromWindow(hwndSource.Handle, NativeMethods.MONITOR_DEFAULTTONEAREST);
 				if (monitor == IntPtr.Zero)

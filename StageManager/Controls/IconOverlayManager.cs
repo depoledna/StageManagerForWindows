@@ -7,6 +7,8 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
+using StageManager.Animations;
+using StageManager.Helpers;
 using StageManager.Model;
 
 namespace StageManager.Controls
@@ -194,8 +196,9 @@ namespace StageManager.Controls
             // Image's natural box is IconSize×IconSize; the ScaleTransform around its center shrinks
             // the rendered visual without moving the natural top-left, so a single Canvas.Left/Top
             // expression works for both states.
-            var canvasLeft = visualCenterX - IconSize / 2 - _overlay!.Left;
-            var canvasTop = visualCenterY - IconSize / 2 - _overlay.Top;
+            var canvasPoint = new Point(visualCenterX - IconSize / 2, visualCenterY - IconSize / 2).ToCanvas(_overlay!);
+            var canvasLeft = canvasPoint.X;
+            var canvasTop = canvasPoint.Y;
 
             var key = (scene.Id, idx);
             if (_icons.TryGetValue(key, out var live))
@@ -257,8 +260,9 @@ namespace StageManager.Controls
 
         private void ApplyLabelTarget(SceneModel scene, double left, double top, double width)
         {
-            var canvasLeft = left - _overlay!.Left;
-            var canvasTop = top - _overlay.Top;
+            var canvasPoint = new Point(left, top).ToCanvas(_overlay!);
+            var canvasLeft = canvasPoint.X;
+            var canvasTop = canvasPoint.Y;
             var text = BuildLabelText(scene, HighlightedProcessKey ?? "");
 
             if (_labels.TryGetValue(scene.Id, out var live))
@@ -298,7 +302,7 @@ namespace StageManager.Controls
             if (live.Removing) return;
             live.Removing = true;
 
-            var anim = new DoubleAnimation(0, MorphDuration) { EasingFunction = MorphEaseIn };
+            var anim = Anim.To(0, MorphDuration, MorphEaseIn);
             anim.Completed += (_, _) =>
             {
                 if (!live.Removing) return; // re-claimed mid-fade
@@ -314,7 +318,7 @@ namespace StageManager.Controls
             if (live.Removing) return;
             live.Removing = true;
 
-            var anim = new DoubleAnimation(0, MorphDuration) { EasingFunction = MorphEaseIn };
+            var anim = Anim.To(0, MorphDuration, MorphEaseIn);
             anim.Completed += (_, _) =>
             {
                 if (!live.Removing) return;
@@ -326,16 +330,13 @@ namespace StageManager.Controls
 
         private static void AnimateDouble(UIElement target, DependencyProperty prop, double to)
         {
-            var anim = new DoubleAnimation(to, MorphDuration) { EasingFunction = MorphEaseOut };
-            target.BeginAnimation(prop, anim, HandoffBehavior.SnapshotAndReplace);
+            target.BeginAnimation(prop, Anim.To(to, MorphDuration, MorphEaseOut), HandoffBehavior.SnapshotAndReplace);
         }
 
         private static void AnimateScale(ScaleTransform t, double to, Duration duration)
         {
-            var ax = new DoubleAnimation(to, duration) { EasingFunction = MorphEaseOut };
-            var ay = new DoubleAnimation(to, duration) { EasingFunction = MorphEaseOut };
-            t.BeginAnimation(ScaleTransform.ScaleXProperty, ax, HandoffBehavior.SnapshotAndReplace);
-            t.BeginAnimation(ScaleTransform.ScaleYProperty, ay, HandoffBehavior.SnapshotAndReplace);
+            t.BeginAnimation(ScaleTransform.ScaleXProperty, Anim.To(to, duration, MorphEaseOut), HandoffBehavior.SnapshotAndReplace);
+            t.BeginAnimation(ScaleTransform.ScaleYProperty, Anim.To(to, duration, MorphEaseOut), HandoffBehavior.SnapshotAndReplace);
         }
 
         public void Show(Rect workArea)
@@ -357,7 +358,7 @@ namespace StageManager.Controls
             if (_overlay == null) return;
             var transform = new TranslateTransform(offsetX, 0);
             _overlay.Canvas.RenderTransform = transform;
-            var anim = new DoubleAnimation(offsetX, 0, new Duration(duration)) { EasingFunction = easing };
+            var anim = Anim.From(offsetX, 0, new Duration(duration), easing);
             anim.Completed += (_, _) =>
             {
                 _overlay.Canvas.RenderTransform = Transform.Identity;
@@ -371,7 +372,7 @@ namespace StageManager.Controls
             if (_overlay == null) return;
             var transform = _overlay.Canvas.RenderTransform as TranslateTransform ?? new TranslateTransform();
             _overlay.Canvas.RenderTransform = transform;
-            var anim = new DoubleAnimation(0, offsetX, new Duration(duration)) { EasingFunction = easing };
+            var anim = Anim.From(0, offsetX, new Duration(duration), easing);
             anim.Completed += (_, _) => Hide();
             transform.BeginAnimation(TranslateTransform.XProperty, anim);
         }
@@ -386,13 +387,8 @@ namespace StageManager.Controls
 
         private void EnsureOverlay(Rect bounds)
         {
-            if (_overlay == null)
-                _overlay = new IconOverlayWindow();
-
-            _overlay.Left = bounds.X;
-            _overlay.Top = bounds.Y;
-            _overlay.Width = bounds.Width;
-            _overlay.Height = bounds.Height;
+            _overlay ??= new IconOverlayWindow();
+            _overlay.PositionFrom(bounds);
         }
 
         private static string BuildLabelText(SceneModel scene, string filterFilename)

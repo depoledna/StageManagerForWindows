@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using StageManager.Helpers;
 using StageManager.Model;
 
 namespace StageManager.Animations
@@ -35,10 +36,11 @@ namespace StageManager.Animations
 
 				var icon = scene?.Windows.FirstOrDefault()?.Icon;
 				_ghost = PlaceholderFactory.Create(icon);
-				Canvas.SetLeft(_ghost, ghostRect.X - overlayBounds.X);
-				Canvas.SetTop(_ghost, ghostRect.Y - overlayBounds.Y);
-				_ghost.Width = ghostRect.Width;
-				_ghost.Height = ghostRect.Height;
+				var ghostCanvas = ghostRect.ToCanvas(overlay);
+				Canvas.SetLeft(_ghost, ghostCanvas.X);
+				Canvas.SetTop(_ghost, ghostCanvas.Y);
+				_ghost.Width = ghostCanvas.Width;
+				_ghost.Height = ghostCanvas.Height;
 
 				overlay.Canvas.Children.Add(_ghost);
 				overlay.Show();
@@ -56,8 +58,9 @@ namespace StageManager.Animations
 			if (_ghost == null) return;
 			var overlay = _animator.Overlay;
 			if (overlay == null) return;
-			Canvas.SetLeft(_ghost, screenX - overlay.Left);
-			Canvas.SetTop(_ghost, screenY - overlay.Top);
+			var canvasPoint = new Point(screenX, screenY).ToCanvas(overlay);
+			Canvas.SetLeft(_ghost, canvasPoint.X);
+			Canvas.SetTop(_ghost, canvasPoint.Y);
 			_ghost.Width = Math.Max(1, width);
 			_ghost.Height = Math.Max(1, height);
 		}

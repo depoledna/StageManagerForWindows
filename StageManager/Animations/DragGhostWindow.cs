@@ -1,10 +1,9 @@
 using System;
 using System.Threading;
 using System.Windows;
-using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
-using StageManager.Native.PInvoke;
+using StageManager.Controls;
 
 namespace StageManager.Animations
 {
@@ -36,25 +35,7 @@ namespace StageManager.Animations
 			{
 				_dispatcher = Dispatcher.CurrentDispatcher;
 
-				_window = new Window
-				{
-					WindowStyle = WindowStyle.None,
-					AllowsTransparency = true,
-					Background = Brushes.Transparent,
-					Topmost = true,
-					ShowInTaskbar = false,
-					ShowActivated = false,
-					Focusable = false,
-					ResizeMode = ResizeMode.NoResize,
-				};
-
-				_window.SourceInitialized += (s, e) =>
-				{
-					var hwnd = new WindowInteropHelper(_window).Handle;
-					var exStyle = Win32.GetWindowExStyleLongPtr(hwnd);
-					Win32.SetWindowStyleExLongPtr(hwnd,
-						exStyle | Win32.WS_EX.WS_EX_TOOLWINDOW | Win32.WS_EX.WS_EX_TRANSPARENT);
-				};
+				_window = new LayeredOverlayWindowBase();
 
 				// Signal ready before Dispatcher.Run — warmup happens via BeginInvoke
 				_ready.Set();

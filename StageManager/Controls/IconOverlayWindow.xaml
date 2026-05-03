@@ -1,14 +1,7 @@
-<Window
+<controls:LayeredOverlayWindowBase
     x:Class="StageManager.Controls.IconOverlayWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    WindowStyle="None"
-    AllowsTransparency="True"
-    Background="Transparent"
-    Topmost="True"
-    ShowInTaskbar="False"
-    ShowActivated="False"
-    Focusable="False"
-    ResizeMode="NoResize">
+    xmlns:controls="clr-namespace:StageManager.Controls">
     <Canvas x:Name="IconCanvas" />
-</Window>
+</controls:LayeredOverlayWindowBase>
