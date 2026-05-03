@@ -1149,7 +1149,6 @@ namespace StageManager
 		[System.Diagnostics.Conditional("DEBUG")]
 		private void ShowDebugDragZones()
 		{
-			var dpi = Dpi;
 			var sidebarW = _lastWidth;
 			var bufferW = DragDropManager.BufferWidthLogical;
 			var workArea = GetWorkAreaBounds();

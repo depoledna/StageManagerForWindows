@@ -50,6 +50,12 @@ namespace StageManager.Animations
 			_isAnimating = true;
 			var tcs = new TaskCompletionSource<bool>();
 
+			// Hoisted so the catch block can clean up partial state (placeholders already
+			// added to Canvas.Children before the exception). Otherwise they leak forever
+			// and stale ghost rectangles compound across failures.
+			Border inPlaceholder = null;
+			Border outPlaceholder = null;
+
 			try
 			{
 				EnsureOverlay(overlayBounds);
@@ -57,10 +63,6 @@ namespace StageManager.Animations
 				var duration = new Duration(TimeSpan.FromMilliseconds(AnimationDurationMs));
 				var easing = new PowerEase { EasingMode = EasingMode.EaseOut };
 				var storyboard = new Storyboard();
-
-				// Track placeholders so we can remove exactly these on completion
-				Border inPlaceholder = null;
-				Border outPlaceholder = null;
 
 				// --- Incoming placeholder (sidebar → window position) ---
 				var inIcon = incomingScene?.Windows.FirstOrDefault()?.Icon;
@@ -102,7 +104,9 @@ namespace StageManager.Animations
 			}
 			catch (Exception ex)
 			{
-				Log.Info("ANIM", $"Transition failed: {ex.Message}");
+				Log.Info("ANIM", $"Transition failed: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+				if (inPlaceholder != null) _overlay?.Canvas.Children.Remove(inPlaceholder);
+				if (outPlaceholder != null) _overlay?.Canvas.Children.Remove(outPlaceholder);
 				_isAnimating = false;
 				_overlay?.Hide();
 				tcs.TrySetResult(false);
