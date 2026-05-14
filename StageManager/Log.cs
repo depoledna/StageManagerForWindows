@@ -86,8 +86,13 @@ namespace StageManager
 		}
 
 		[Conditional("DEBUG")]
-		public static void Window(string tag, string action, Native.Window.IWindow window)
+		public static void Window(string tag, string action, Native.Window.IWindow? window)
 		{
+			if (window is null)
+			{
+				Debug.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] [{tag}] {action}: (null)");
+				return;
+			}
 			Debug.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] [{tag}] {action}: '{window.Title}' Handle=0x{window.Handle:X} Process='{window.ProcessFileName}' Minimized={window.IsMinimized} Focused={window.IsFocused}");
 		}
 

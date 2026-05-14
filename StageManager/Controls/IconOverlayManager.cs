@@ -221,7 +221,7 @@ namespace StageManager.Controls
             }
         }
 
-        private LiveIcon CreateLiveIcon(ImageSource source, string processKey, SceneModel scene, int idx, double initialScale)
+        private LiveIcon CreateLiveIcon(ImageSource? source, string processKey, SceneModel scene, int idx, double initialScale)
         {
             // Two scale transforms composed via TransformGroup: morph (layout) and hover (interaction).
             // They animate independently on the same Image without stomping each other.
@@ -291,7 +291,7 @@ namespace StageManager.Controls
                 Canvas.SetLeft(tb, canvasLeft);
                 Canvas.SetTop(tb, canvasTop);
                 _labels[scene.Id] = new LiveLabel { Text = tb };
-                _overlay.Canvas.Children.Add(tb);
+                _overlay!.Canvas.Children.Add(tb);
                 AnimateDouble(tb, UIElement.OpacityProperty, 1.0);
             }
         }

@@ -19,22 +19,22 @@ namespace StageManager
 	public class SceneManager : IDisposable
 	{
 		private readonly Desktop _desktop;
-		private List<Scene> _scenes;
+		private List<Scene> _scenes = new List<Scene>();
 		private readonly object _scenesLock = new object();
-		private Scene _current;
+		private Scene? _current;
 		private bool _suspend = false;
-		private Scene _lastScene; // remembers the scene that was active before desktop view
-		private IWindow _lastFocusedWindow;
+		private Scene? _lastScene; // remembers the scene that was active before desktop view
+		private IWindow? _lastFocusedWindow;
 		private DateTime _lastFocusChange = DateTime.MinValue; // Track rapid focus changes
 
 		/// <summary>
 		/// When set, focus-triggered scene switches use this delegate instead of calling SwitchTo directly.
 		/// MainWindow sets this to inject the transition animation.
 		/// </summary>
-		public Func<Scene, Task<bool>> AnimatedSwitch { get; set; }
+		public Func<Scene, Task<bool>>? AnimatedSwitch { get; set; }
 
-		public event EventHandler<SceneChangedEventArgs> SceneChanged;
-		public event EventHandler<CurrentSceneSelectionChangedEventArgs> CurrentSceneSelectionChanged;
+		public event EventHandler<SceneChangedEventArgs>? SceneChanged;
+		public event EventHandler<CurrentSceneSelectionChangedEventArgs>? CurrentSceneSelectionChanged;
 
 		// Use full-transparency instead of minimising so hidden windows keep repainting and thumbnails stay live.
 		private IWindowStrategy WindowStrategy { get; } = new OpacityWindowStrategy();
@@ -109,17 +109,14 @@ namespace StageManager
 		internal void Stop()
 		{
 			// Unsubscribe from all WindowsManager events to prevent memory leaks
-			if (WindowsManager != null)
-			{
-				WindowsManager.WindowCreated -= WindowsManager_WindowCreated;
-				WindowsManager.WindowUpdated -= WindowsManager_WindowUpdated;
-				WindowsManager.WindowDestroyed -= WindowsManager_WindowDestroyed;
-				WindowsManager.DesktopShortClick -= WindowsManager_DesktopShortClick;
-			}
+			WindowsManager.WindowCreated -= WindowsManager_WindowCreated;
+			WindowsManager.WindowUpdated -= WindowsManager_WindowUpdated;
+			WindowsManager.WindowDestroyed -= WindowsManager_WindowDestroyed;
+			WindowsManager.DesktopShortClick -= WindowsManager_DesktopShortClick;
 
 			// Restore opacity BEFORE WindowsManager.Stop() clears _windows.
 			var exemptHandle = _lastFocusedWindow?.Handle ?? Win32.GetForegroundWindow();
-			foreach (var w in WindowsManager?.Windows ?? Array.Empty<IWindow>())
+			foreach (var w in WindowsManager.Windows)
 			{
 				WindowStrategy.Show(w);
 				if (w.Handle != exemptHandle)
@@ -315,28 +312,29 @@ namespace StageManager
 						Task.Run(async () =>
 						{
 							await Task.Delay(200);
-							Scene fallback;
+							Scene? fallback;
 							lock (_scenesLock)
 								fallback = _scenes.FirstOrDefault(s => s.Windows.Any());
-							await SwitchTo(fallback).ConfigureAwait(false);
+							if (fallback is not null)
+								await SwitchTo(fallback).ConfigureAwait(false);
 						});
 					}
 				}
 			}
 		}
 
-		public Scene FindSceneForWindow(IWindow window) => FindSceneForWindow(window.Handle);
+		public Scene? FindSceneForWindow(IWindow window) => FindSceneForWindow(window.Handle);
 
-		public Scene FindSceneForWindow(IntPtr handle)
+		public Scene? FindSceneForWindow(IntPtr handle)
 		{
 			lock (_scenesLock)
-				return _scenes?.FirstOrDefault(s => s.Windows.Any(w => w.Handle == handle));
+				return _scenes.FirstOrDefault(s => s.Windows.Any(w => w.Handle == handle));
 		}
 
-		private Scene FindSceneForProcess(string processName)
+		private Scene? FindSceneForProcess(string processName)
 		{
 			lock (_scenesLock)
-				return _scenes?.FirstOrDefault(s => string.Equals(s.Key, processName, StringComparison.OrdinalIgnoreCase));
+				return _scenes.FirstOrDefault(s => string.Equals(s.Key, processName, StringComparison.OrdinalIgnoreCase));
 		}
 
 		private async void WindowsManager_WindowCreated(IWindow window, bool firstCreate)
@@ -471,7 +469,7 @@ namespace StageManager
 
 			Log.Info("SWITCH", $"SwitchTo START: '{_current?.Title}' → '{scene?.Title ?? "(desktop)"}'");
 
-			IWindow focusCandidate = null;
+			IWindow? focusCandidate = null;
 
 			try
 			{
@@ -652,7 +650,7 @@ namespace StageManager
 		/// Removes a window from its current scene and creates a new scene for it in the sidebar.
 		/// The window is hidden (alpha→0). Returns the new scene, or null if the operation was skipped.
 		/// </summary>
-		public Scene SeparateWindowToNewScene(IWindow window)
+		public Scene? SeparateWindowToNewScene(IWindow window)
 		{
 			var source = FindSceneForWindow(window);
 			if (source == null || !source.Equals(_current))
@@ -691,22 +689,22 @@ namespace StageManager
 			}
 		}
 
-		private IEnumerable<IWindow> GetSceneableWindows() => WindowsManager?.Windows?.Where(w => !IsPersistentWindow(w) && w.CanLayout && !string.IsNullOrEmpty(w.ProcessFileName) && !string.IsNullOrEmpty(w.Title));
+		private IEnumerable<IWindow> GetSceneableWindows() => WindowsManager.Windows.Where(w => !IsPersistentWindow(w) && w.CanLayout && !string.IsNullOrEmpty(w.ProcessFileName) && !string.IsNullOrEmpty(w.Title));
 
 		public IEnumerable<Scene> GetScenes()
 		{
 			lock (_scenesLock)
 			{
-				if (_scenes is null)
+				if (_scenes.Count == 0)
 				{
 					var restorePath = App.RestoreScenesPath;
 					if (restorePath != null)
 					{
-						_scenes = RestoreScenesFromSnapshot(restorePath);
+						_scenes = RestoreScenesFromSnapshot(restorePath) ?? new List<Scene>();
 						UpdateService.CleanupStagingFolder();
 					}
 
-					if (_scenes is null)
+					if (_scenes.Count == 0)
 					{
 						_scenes = GetSceneableWindows()
 							// Include all windows during initial startup (including minimized ones) for automatic scene population
@@ -788,7 +786,7 @@ namespace StageManager
 			return scenes.Count > 0 ? scenes : null;
 		}
 
-		public bool IsCurrentScene(Scene scene) => object.Equals(scene, _current);
+		public bool IsCurrentScene(Scene? scene) => object.Equals(scene, _current);
 
 		public bool IsDesktopView => _current is null;
 

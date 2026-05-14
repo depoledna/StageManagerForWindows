@@ -26,7 +26,7 @@ namespace StageManager.Animations
 		private readonly Func<Point> _getDpiScale;
 		private readonly Func<double> _getSidebarWidth;
 		private readonly Func<IWindow, Rect> _getWindowLogicalRect;
-		private readonly Func<IWindow, ImageSource> _getWindowIcon;
+		private readonly Func<IWindow, ImageSource?> _getWindowIcon;
 		private readonly Action _syncVisibility;
 
 		private int _stateValue = (int)DragState.None;
@@ -36,12 +36,12 @@ namespace StageManager.Animations
 			set => Volatile.Write(ref _stateValue, (int)value);
 		}
 
-		private IWindow _trackedWindow;
+		private IWindow? _trackedWindow;
 		private Rect _originalWindowRect;
 		private double _bufferRightPhysical;
 		private double _sidebarWidthPhysical;
 		private Win32.WS _originalStyle;
-		private DispatcherTimer _pollTimer;
+		private DispatcherTimer? _pollTimer;
 
 		public bool IsDragging => State != DragState.None;
 
@@ -51,7 +51,7 @@ namespace StageManager.Animations
 			Func<Point> getDpiScale,
 			Func<double> getSidebarWidth,
 			Func<IWindow, Rect> getWindowLogicalRect,
-			Func<IWindow, ImageSource> getWindowIcon,
+			Func<IWindow, ImageSource?> getWindowIcon,
 			Action syncVisibility)
 		{
 			_sceneManager = sceneManager;
@@ -67,7 +67,7 @@ namespace StageManager.Animations
 		{
 			if (State != DragState.None) return;
 			var scene = _sceneManager.FindSceneForWindow(window);
-			if (!_sceneManager.IsCurrentScene(scene))
+			if (scene is null || !_sceneManager.IsCurrentScene(scene))
 				return;
 			if (scene.Windows.Count() <= 1)
 				return;
@@ -174,7 +174,7 @@ namespace StageManager.Animations
 			}
 		}
 
-		private void PollTick(object sender, EventArgs e)
+		private void PollTick(object? sender, EventArgs e)
 		{
 			if (_trackedWindow == null)
 			{
@@ -224,6 +224,7 @@ namespace StageManager.Animations
 
 		private void ExitBufferZone()
 		{
+			if (_trackedWindow is null) return;
 			Log.Info("DRAG", "Exited buffer zone (cursor moved right)");
 			_ghostWindow.Hide();
 			Win32.SetWindowStyleLongPtr(_trackedWindow.Handle, _originalStyle);

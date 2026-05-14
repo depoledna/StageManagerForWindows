@@ -15,9 +15,9 @@ namespace StageManager.Animations
 	internal class DragGhostWindow : IDisposable
 	{
 		private Thread _thread;
-		private Dispatcher _dispatcher;
+		private Dispatcher _dispatcher = null!;
 		private readonly ManualResetEventSlim _ready = new();
-		private Window _window;
+		private Window _window = null!;
 		private volatile bool _disposed;
 
 		public DragGhostWindow()
@@ -65,12 +65,12 @@ namespace StageManager.Animations
 		/// <summary>
 		/// Shows the drag ghost at the given logical coordinates with the specified icon.
 		/// </summary>
-		public void Show(double x, double y, double w, double h, ImageSource icon)
+		public void Show(double x, double y, double w, double h, ImageSource? icon)
 		{
 			if (_disposed) return;
 
 			// Freeze the icon so it can cross thread boundaries
-			ImageSource frozenIcon = null;
+			ImageSource? frozenIcon = null;
 			if (icon != null)
 			{
 				frozenIcon = icon.IsFrozen ? icon : icon.CloneCurrentValue();

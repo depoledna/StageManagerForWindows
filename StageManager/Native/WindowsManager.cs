@@ -21,9 +21,9 @@ namespace StageManager.Native
 		private IDictionary<IntPtr, WindowsWindow> _windows;
 		private WinEventDelegate _hookDelegate;
 
-		private WindowsWindow _mouseMoveWindow;
+		private WindowsWindow? _mouseMoveWindow;
 		private readonly object _mouseMoveLock = new object();
-		private Win32.HookProc _mouseHook;
+		private Win32.HookProc _mouseHook = null!;
 		private readonly HashSet<IntPtr> _startupMinimizedHandles = new();
 		private readonly List<IntPtr> _winEventHooks = new();
 		private IntPtr _mouseHookHandle;
@@ -42,7 +42,7 @@ namespace StageManager.Native
 		/// Raised after a completed < 250 ms left-button click when the desktop (WorkerW/Progman) is the foreground window.
 		/// The <see cref="IntPtr"/> argument is the handle of the desktop window that had focus.
 		/// </summary>
-		public event EventHandler<IntPtr> DesktopShortClick;
+		public event EventHandler<IntPtr>? DesktopShortClick;
 
 #if DEBUG
 		// Set this to true while debugging to dump detailed information about how each window is
@@ -63,16 +63,16 @@ namespace StageManager.Native
 		/// <summary>
 		/// Notifies when a new window handle was created by the manager
 		/// </summary>
-		public event WindowCreateDelegate WindowCreated;
+		public event WindowCreateDelegate? WindowCreated;
 		/// <summary>
 		/// Notifies when a handled window was removed by the manager
 		/// </summary>
-		public event WindowDelegate WindowDestroyed;
+		public event WindowDelegate? WindowDestroyed;
 		/// <summary>
 		/// Notifies when a handled window was updated by the manager
 		/// This is used internally by the workspace manager to apply the update to the window
 		/// </summary>
-		public event WindowUpdateDelegate WindowUpdated;
+		public event WindowUpdateDelegate? WindowUpdated;
 
 		public IEnumerable<IWindow> Windows => _windows.Values;
 
@@ -119,7 +119,7 @@ namespace StageManager.Native
 			{
 				try
 				{
-					_mouseHookHandle = Win32.SetWindowsHookEx(Win32.WH_MOUSE_LL, _mouseHook, currentProcess.MainModule.BaseAddress, 0);
+					_mouseHookHandle = Win32.SetWindowsHookEx(Win32.WH_MOUSE_LL, _mouseHook, currentProcess.MainModule!.BaseAddress, 0);
 					Application.Run();
 				}
 				catch (Exception ex)

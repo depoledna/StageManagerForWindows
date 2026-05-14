@@ -14,7 +14,7 @@ namespace StageManager.Animations
 		private const double ShadowDepthValue = 2;
 		private const double ShadowOpacity = 0.4;
 
-		public static Border Create(ImageSource icon)
+		public static Border Create(ImageSource? icon)
 		{
 			return new Border
 			{

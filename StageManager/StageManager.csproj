@@ -28,8 +28,8 @@
 		<PackageReference Include="AsyncAwaitBestPractices" Version="9.0.0" />
 		<PackageReference Include="ControlzEx" Version="7.0.1" />
 		<PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="2.0.1" />
-		<PackageReference Include="Vortice.Direct3D11" Version="3.7.0" />
-		<PackageReference Include="Vortice.DXGI" Version="3.7.0" />
+		<PackageReference Include="Vortice.Direct3D11" Version="3.8.1" />
+		<PackageReference Include="Vortice.DXGI" Version="3.8.1" />
 		<PackageReference Include="SharpHook" Version="6.1.2" />
 		<PackageReference Include="WpfScreenHelper" Version="2.1.1" />
 	</ItemGroup>

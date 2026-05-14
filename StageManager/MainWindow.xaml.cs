@@ -35,24 +35,24 @@ namespace StageManager
 		private const int MAX_SCENES = 6;
 		private const string APP_NAME = "StageManager";
 		private IntPtr _thisHandle;
-		private TaskPoolGlobalHook _hook;
+		private TaskPoolGlobalHook? _hook;
 		private volatile bool _trayMenuOpen;
 		private WindowMode _mode;
 		private double _lastWidth;
-		private Timer _overlapCheckTimer;
+		private Timer? _overlapCheckTimer;
 		private long _mouseX;
-		private CancellationTokenSource _cancellationTokenSource;
-		private SceneModel _removedCurrentScene;
-		private SceneModel _mouseDownScene;
+		private CancellationTokenSource? _cancellationTokenSource;
+		private SceneModel? _removedCurrentScene;
+		private SceneModel? _mouseDownScene;
 		private bool _hideDesktopIcons;
 
 		// WPF-native drag state (all UI thread, no cross-thread issues)
 		private enum SidebarDragPhase { None, InSidebar, InBuffer, PastBuffer }
-		private SceneModel _wpfDragScene;
+		private SceneModel? _wpfDragScene;
 		private Point _wpfDragStartPoint;
 		private SidebarDragPhase _sidebarDragPhase;
 		private bool IsSidebarDragging => _sidebarDragPhase != SidebarDragPhase.None;
-		private IWindow _sidebarDragWindow;
+		private IWindow? _sidebarDragWindow;
 		private Rect _sidebarDragThumbRect;
 		private Rect _sidebarDragWindowRect;
 		private Point _sidebarDragDpi;
@@ -62,7 +62,7 @@ namespace StageManager
 		private readonly SidebarDragGhost _sidebarDragGhost;
 		private readonly DebugZoneOverlay _debugZoneOverlay;
 
-		private DragDropManager _dragDropManager;
+		private DragDropManager? _dragDropManager;
 		private readonly DragGhostWindow _dragGhostWindow = new DragGhostWindow();
 		private readonly IconOverlayManager _iconOverlay = new();
 		private readonly UpdateService _updateService = new();
@@ -87,7 +87,7 @@ namespace StageManager
 		// and scene previews stay culled while setup runs (scenes added, foreground scene switched).
 		private bool _startupSlideComplete = false;
 
-		public event PropertyChangedEventHandler PropertyChanged;
+		public event PropertyChangedEventHandler? PropertyChanged;
 
 		public bool EnableWindowPullToScene = true;
 
@@ -167,7 +167,7 @@ namespace StageManager
 				return false;
 			}
 
-			if (SceneManager != null && SceneManager.IsCurrentScene(scene))
+			if (SceneManager.IsCurrentScene(scene))
 			{
 				Log.Info("TRANSITION", $"Already on '{scene?.Title}', skipping");
 				return false;
@@ -181,7 +181,7 @@ namespace StageManager
 			if (sceneModel == null)
 			{
 				Log.Info("TRANSITION", $"No sidebar model for '{scene?.Title}', instant switch");
-				return await SceneManager!.SwitchTo(scene);
+				return await SceneManager.SwitchTo(scene);
 			}
 
 			var dpi = Dpi;
@@ -220,7 +220,7 @@ namespace StageManager
 			}
 
 			Log.Info("TRANSITION", "Calling SwitchTo");
-			var switched = await SceneManager!.SwitchTo(scene);
+			var switched = await SceneManager.SwitchTo(scene);
 			if (!switched)
 			{
 				Log.Info("TRANSITION", "SwitchTo blocked, restoring sidebar state");
@@ -253,12 +253,9 @@ namespace StageManager
 			_cancellationTokenSource?.Dispose();
 
 			// Unsubscribe from SceneManager events before stopping to prevent memory leaks
-			if (SceneManager != null)
-			{
-				SceneManager.SceneChanged -= SceneManager_SceneChanged;
-				SceneManager.CurrentSceneSelectionChanged -= SceneManager_CurrentSceneSelectionChanged;
-				SceneManager.WindowsManager.WindowUpdated -= OnWindowUpdatedForDrag;
-			}
+			SceneManager.SceneChanged -= SceneManager_SceneChanged;
+			SceneManager.CurrentSceneSelectionChanged -= SceneManager_CurrentSceneSelectionChanged;
+			SceneManager.WindowsManager.WindowUpdated -= OnWindowUpdatedForDrag;
 
 			StopHook();
 
@@ -268,7 +265,7 @@ namespace StageManager
 			trayIcon.Dispose();
 
 			// Dispose SceneManager properly
-			SceneManager?.Dispose();
+			SceneManager.Dispose();
 
 			// Clean up animation overlay, drag ghost, and icon overlay
 			_sceneTransitionAnimator?.Dispose();
@@ -312,7 +309,7 @@ namespace StageManager
 				() => Dpi,
 				() => _lastWidth,
 				w => WindowToLogicalRect(w),
-				w => AllScenes.Where(s => s != null).SelectMany(s => s.Windows).FirstOrDefault(wm => wm.Handle == w.Handle)?.Icon,
+				w => AllScenes.OfType<SceneModel>().SelectMany(s => s.Windows).FirstOrDefault(wm => wm.Handle == w.Handle)?.Icon,
 				() => SyncVisibilityByUpdatedTimeStamp());
 			SceneManager.WindowsManager.WindowUpdated += OnWindowUpdatedForDrag;
 
@@ -354,7 +351,7 @@ namespace StageManager
 			// All icon-overlay enable, position calc, opacity reveal, and slide-in animations happen
 			// inside a single Loaded-priority dispatcher slot. Window stays at Left=-Width with
 			// Opacity=0 throughout setup, so the user only sees the slide-in.
-			Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () =>
+			_ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () =>
 			{
 				var startupDuration = TimeSpan.FromSeconds(0.5);
 				var startupEasing = new PowerEase { EasingMode = EasingMode.EaseOut };
@@ -461,11 +458,11 @@ namespace StageManager
 			RefreshIconOverlay();
 		}
 
-		private void SceneManager_SceneChanged(object sender, SceneChangedEventArgs e)
+		private void SceneManager_SceneChanged(object? sender, SceneChangedEventArgs e)
 		{
 			this.Dispatcher.Invoke(() =>
 			{
-				Log.Info("UI", $"SceneChanged: {e.Change} scene='{e.Scene?.Title}'");
+				Log.Info("UI", $"SceneChanged: {e.Change} scene='{e.Scene.Title}'");
 
 				switch (e.Change)
 				{
@@ -474,11 +471,11 @@ namespace StageManager
 						SyncVisibilityByUpdatedTimeStamp();
 						break;
 					case ChangeType.Updated:
-						if (AllScenes.FirstOrDefault(s => s.Id == e.Scene.Id) is SceneModel toUpdate)
+						if (AllScenes.FirstOrDefault(s => s?.Id == e.Scene.Id) is SceneModel toUpdate)
 							toUpdate.UpdateFromScene(e.Scene);
 						break;
 					case ChangeType.Removed:
-						if (AllScenes.FirstOrDefault(s => s.Id == e.Scene.Id) is SceneModel toRemove)
+						if (AllScenes.FirstOrDefault(s => s?.Id == e.Scene.Id) is SceneModel toRemove)
 						{
 							if (toRemove.Equals(_removedCurrentScene))
 								_removedCurrentScene = null;
@@ -557,7 +554,7 @@ namespace StageManager
 			}
 		}
 
-		private SceneModel FindSceneByPoint(Point p)
+		private SceneModel? FindSceneByPoint(Point p)
 		{
 			var thisWindow = new WindowsWindow(_thisHandle);
 			var pointOnWindow = new Point(p.X - thisWindow.Location.X, p.Y - thisWindow.Location.Y);
@@ -567,7 +564,7 @@ namespace StageManager
 			pointOnWindow.X /= dpi.X;
 			pointOnWindow.Y /= dpi.Y;
 
-			SceneModel model = null;
+			SceneModel? model = null;
 
 			var element = VisualTreeHelper.HitTest(this, pointOnWindow)?.VisualHit;
 
@@ -607,7 +604,7 @@ namespace StageManager
 
 			// Find which SceneModel was clicked
 			var hit = e.OriginalSource as FrameworkElement;
-			SceneModel scene = null;
+			SceneModel? scene = null;
 			while (hit != null)
 			{
 				if (hit.DataContext is SceneModel sm) { scene = sm; break; }
@@ -785,7 +782,7 @@ namespace StageManager
 			_wpfDragScene = null;
 			_sidebarDragWindow = null;
 			Mouse.Capture(null);
-			SceneManager?.WindowsManager.SuppressNextDesktopClick();
+			SceneManager.WindowsManager.SuppressNextDesktopClick();
 		}
 
 		private void ShowSidebarDragRealWindow()
@@ -1035,11 +1032,11 @@ namespace StageManager
 
 		public ObservableCollection<SceneModel> Scenes { get; } = new ObservableCollection<SceneModel>();
 
-		public IEnumerable<SceneModel> AllScenes => Scenes.Union(new[] { _removedCurrentScene });
+		public IEnumerable<SceneModel?> AllScenes => Scenes.Union(new[] { _removedCurrentScene });
 
 		public ICommand SwitchSceneCommand { get; }
 
-		public SceneManager SceneManager { get; private set; }
+		public SceneManager SceneManager { get; private set; } = null!;
 
 		public IntPtr Handle => _thisHandle;
 
@@ -1110,6 +1107,7 @@ namespace StageManager
 
 		private void StopHook()
 		{
+			if (_hook is null) return;
 			_hook.MousePressed -= OnMousePressed;
 			_hook.MouseReleased -= OnMouseReleased;
 			_hook.MouseMoved -= _hook_MouseMoved;
@@ -1146,7 +1144,7 @@ namespace StageManager
 		{
 			// Freeze sidebar mode in desktop view: scene windows are stowed (alpha=0) but still
 			// report layout positions, so doesOverlap() would falsely flag overlap and hide the tray.
-			if (SceneManager?.IsDesktopView == true)
+			if (SceneManager.IsDesktopView)
 				return;
 
 			bool doesOverlap(IWindowLocation loc) => loc.State == Native.Window.WindowState.Maximized || (loc.State == Native.Window.WindowState.Normal && (loc.X * 2) < _lastWidth);
@@ -1242,7 +1240,7 @@ namespace StageManager
 		/// Converts a window's Location (physical pixels) to WPF logical units.
 		/// Returns Rect.Empty if the window is minimized, offscreen-parked, or invalid.
 		/// </summary>
-		private Rect WindowToLogicalRect(Native.Window.IWindow window)
+		private Rect WindowToLogicalRect(Native.Window.IWindow? window)
 		{
 			if (window == null || window.IsMinimized)
 				return Rect.Empty;

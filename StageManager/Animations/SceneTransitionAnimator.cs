@@ -13,12 +13,12 @@ namespace StageManager.Animations
 	{
 		private const int AnimationDurationMs = 300;
 
-		private TransitionOverlayWindow _overlay;
+		private TransitionOverlayWindow? _overlay;
 		private bool _isAnimating;
 
 		public bool IsAnimating => _isAnimating;
 
-		internal TransitionOverlayWindow Overlay => _overlay;
+		internal TransitionOverlayWindow? Overlay => _overlay;
 
 		internal TransitionOverlayWindow GetOrCreateOverlay(Rect bounds)
 		{
@@ -44,7 +44,7 @@ namespace StageManager.Animations
 		public Task AnimateSceneTransitionAsync(
 			Rect overlayBounds,
 			Rect incomingSource, Rect incomingTarget, SceneModel incomingScene,
-			Rect outgoingSource, Rect outgoingTarget, SceneModel outgoingScene)
+			Rect outgoingSource, Rect outgoingTarget, SceneModel? outgoingScene)
 		{
 			if (_isAnimating) return Task.CompletedTask;
 			_isAnimating = true;
@@ -53,8 +53,8 @@ namespace StageManager.Animations
 			// Hoisted so the catch block can clean up partial state (placeholders already
 			// added to Canvas.Children before the exception). Otherwise they leak forever
 			// and stale ghost rectangles compound across failures.
-			Border inPlaceholder = null;
-			Border outPlaceholder = null;
+			Border? inPlaceholder = null;
+			Border? outPlaceholder = null;
 
 			try
 			{
@@ -115,6 +115,7 @@ namespace StageManager.Animations
 			return tcs.Task;
 		}
 
+		[System.Diagnostics.CodeAnalysis.MemberNotNull(nameof(_overlay))]
 		private void EnsureOverlay(Rect bounds)
 		{
 			_overlay ??= new TransitionOverlayWindow();

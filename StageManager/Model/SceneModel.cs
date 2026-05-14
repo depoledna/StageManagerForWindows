@@ -8,9 +8,9 @@ namespace StageManager.Model
 	[System.Diagnostics.DebuggerDisplay("{Title}")]
 	public class SceneModel : INotifyPropertyChanged
 	{
-		public event PropertyChangedEventHandler PropertyChanged;
+		public event PropertyChangedEventHandler? PropertyChanged;
 		private bool _isVisible;
-		private Scene _scene;
+		private Scene _scene = null!;
 
 		public static SceneModel FromScene(Scene scene)
 		{

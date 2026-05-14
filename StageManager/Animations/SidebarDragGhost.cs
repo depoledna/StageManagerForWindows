@@ -15,7 +15,7 @@ namespace StageManager.Animations
 	internal class SidebarDragGhost
 	{
 		private readonly SceneTransitionAnimator _animator;
-		private Border _ghost;
+		private Border? _ghost;
 		private bool _isActive;
 
 		public bool IsActive => _isActive;

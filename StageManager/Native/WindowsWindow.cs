@@ -15,9 +15,9 @@ namespace StageManager.Native
 		private IntPtr _handle;
 		private bool _didManualHide;
 
-		public event IWindowDelegate WindowClosed;
-		public event IWindowDelegate WindowUpdated;
-		public event IWindowDelegate WindowFocused;
+		public event IWindowDelegate? WindowClosed;
+		public event IWindowDelegate? WindowUpdated;
+		public event IWindowDelegate? WindowFocused;
 
 		public void ClearEvents()
 		{
@@ -27,10 +27,10 @@ namespace StageManager.Native
 		}
 
 		private int _processId;
-		private string _processName;
-		private string _processFileName;
-		private string _processExecutable;
-		private IWindowLocation _lastLocation;
+		private string _processName = string.Empty;
+		private string _processFileName = string.Empty;
+		private string _processExecutable = string.Empty;
+		private IWindowLocation? _lastLocation;
 
 		public WindowsWindow(IntPtr handle)
 		{
@@ -41,11 +41,11 @@ namespace StageManager.Native
 				var process = GetProcessByWindowHandle(_handle);
 				_processId = process.Id;
 				_processName = process.ProcessName;
-				_processExecutable = process.MainModule.FileName;
+				_processExecutable = process.MainModule!.FileName;
 
 				try
 				{
-					_processFileName = Path.GetFileName(process.MainModule.FileName);
+					_processFileName = Path.GetFileName(process.MainModule!.FileName);
 				}
 				catch (System.ComponentModel.Win32Exception)
 				{
@@ -127,7 +127,7 @@ namespace StageManager.Native
 			_lastLocation = Location;
 		}
 
-		public IWindowLocation PopLastLocation()
+		public IWindowLocation? PopLastLocation()
 		{
 			var value = _lastLocation;
 			_lastLocation = null;
@@ -325,7 +325,7 @@ namespace StageManager.Native
 			return $"[{Handle}][{Title}][{Class}][{ProcessName}]";
 		}
 
-		public Icon ExtractIcon()
+		public Icon? ExtractIcon()
 		{
 			if (string.IsNullOrWhiteSpace(_processExecutable))
 				return null;

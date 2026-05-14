@@ -14,7 +14,7 @@ namespace StageManager.Animations
 	internal class DebugZoneOverlay
 	{
 		private readonly SceneTransitionAnimator _animator;
-		private List<Border> _zones;
+		private List<Border>? _zones;
 
 		public DebugZoneOverlay(SceneTransitionAnimator animator)
 		{
