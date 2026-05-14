@@ -14,7 +14,7 @@ No test projects exist. Verify changes by building and running manually.
 
 ## Architecture
 
-macOS Stage Manager clone for Windows. Groups windows by process into "scenes", showing one scene at a time while hiding others via Win32 opacity tricks.
+macOS Stage Manager clone for Windows. Groups windows by process into "scenes", showing one scene at a time while hiding others by parking them off-screen.
 
 ```
 MainWindow.xaml.cs          UI + sidebar + global mouse hooks (SharpHook)
@@ -23,17 +23,37 @@ SceneManager.cs             Orchestration: scene switching, window grouping, des
     ↓ events
 WindowsManager.cs           Window tracking via WinEventHook, mouse hooks, focus detection
     ↓
-OpacityWindowStrategy.cs    Hides windows by setting alpha=0 + WS_EX_TRANSPARENT (keeps DWM thumbnails live)
+OpacityWindowStrategy.cs    Hides windows by moving them past the virtual-screen edge so
+                            DWM keeps compositing them (live capture frames stay valid).
 ```
 
-**Key flow**: Click sidebar scene → animation plays (SceneTransitionAnimator) → SceneManager.SwitchTo() hides other windows (alpha→0) and shows target windows (alpha→255 instant) → sidebar updates via CurrentSceneSelectionChanged event.
+**Key flow**: Click sidebar scene → animation plays (SceneTransitionAnimator) → SceneManager.SwitchTo() hides other windows (off-screen park) and shows target windows (restore saved position) → sidebar updates via CurrentSceneSelectionChanged event.
+
+## Folder Map
+
+- `Animations/` — SceneTransitionAnimator, TransitionOverlayWindow, PlaceholderFactory, DragGhostWindow, DragDropManager
+- `Composition/` — Windows.Graphics.Capture + WinUI Composition pipeline backing `CompositionThumbnail` (CaptureSession, CompositionHost, D3DDeviceHolder, CompositorFactory, DispatcherQueueHelper, Interop/)
+- `Controls/` — CompositionThumbnail (sidebar live preview), IconOverlayManager, LayeredOverlayWindowBase
+- `Model/` — `Scene` (core), `WindowModel` + `SceneModel` (INotifyPropertyChanged UI wrappers)
+- `Native/` — `WindowsManager` (WinEventHook + LL mouse hook), `WindowsWindow` (`IWindow` impl), `PInvoke/` partial classes
+- `Services/` — Settings, AutoStart, ThemeManager, SceneSnapshot, UpdateService, Desktop
+- `Strategies/` — OpacityWindowStrategy (primary) + NormalizeAndMinimize, ShowAndHide alternates behind `IWindowStrategy`
+- `Helpers/` — DesktopShellClassifier (WorkerW/Progman/SysListView32 class detection), OverlayCoordExtensions
+- `Converters/` — sidebar layout converters (Index→Offset, Index→ZIndex)
 
 ## Key Design Decisions
 
-- **OpacityWindowStrategy** over minimize: windows stay at alpha=0 so DWM can still render live thumbnails in the sidebar. The `IWindowStrategy` interface allows swapping strategies.
+- **OpacityWindowStrategy** over minimize: windows are moved off-screen (past the virtual screen edge) rather than minimized, so DWM keeps compositing them and `Windows.Graphics.Capture` continues delivering live frames to the sidebar. The `IWindowStrategy` interface allows swapping strategies. The previous alpha=0 trick was abandoned because WGC captures DWM-composited (post-alpha) output and would otherwise see transparent frames.
+- **Saved-position restore** (`OpacityWindowStrategy._originalPositions`): pre-hide rect captured on `Hide`, replayed on `Show`. `TryGetOriginalPosition` exposes it read-only so the scene-transition animator can target the *intended* on-screen rect of an incoming window instead of its current parked location.
+- **Per-hwnd lock** (`OpacityWindowStrategy.cs`): `ConcurrentDictionary<IntPtr, SemaphoreSlim> _windowLocks` serializes Show/Hide per window so concurrent calls don't race on position state. Disposed on window destroy via `CleanupWindow`.
+- **Composition thumbnails** (`Controls/CompositionThumbnail`, `Composition/`): each sidebar tile owns a `CaptureSession` whose free-threaded `Direct3D11CaptureFramePool` blits into a `CompositionDrawingSurface` hosted by a per-tile `HwndHost` (`CompositionHost`). Single shared D3D11 device + WinRT projection (`D3DDeviceHolder` singleton). Sidebar pixel-alpha hit-test trick: the host containers carry `Background="#01000000"` so the layered top-level WPF window registers a non-zero alpha at thumbnail locations and `WindowFromPoint` lands on the sidebar rather than falling through to whatever is behind it.
 - **[Conditional("DEBUG")]** on `Log` class: all logging compiles away in Release. Log output goes to `stagemanager.log` next to the exe via `TextWriterTraceListener`.
 - **Scene grouping by process**: `Scene.Key` is the process filename. All windows from the same process belong to one scene.
-- **Reentrancy protection**: `SceneManager.SwitchTo` has a reentrancy guard (`_reentrancyLockSceneId`) because focus events can trigger recursive switches. The animation code checks `IsCurrentScene()` before doing destructive work (hiding windows, collapsing sidebar items).
+- **Reentrancy protection** (`SceneManager.cs:25`): `_suspend` bool flag set around `SwitchTo` / scene-mutation paths so focus events fired during a switch don't cascade into another switch. Event handlers early-return when `_suspend` is true.
+- **Rapid-focus throttle** (`SceneManager.cs:451`): `IsRapidFocusChange()` swallows foreground events <100ms apart to block system-initiated focus loops (e.g. modal dialogs, Teams compact view).
+- **Persistent windows** (`SceneManager.cs:54`): `IsPersistentWindow` excludes Teams "Meeting compact view" pop-up from scene assignment so it floats across all scenes. `GetSceneableWindows` filters these out.
+- **Desktop blank-click classification** (`SceneManager.cs:202-234`, `Helpers/DesktopShellClassifier.cs`): a click on WorkerW/Progman is "blank desktop" only when the SysListView32 child reports zero selected items via `LVM_GETSELECTEDCOUNT` — distinguishes wallpaper click from icon click. Used to toggle scene ↔ desktop view.
+- **MainWindow off-screen parking** (`MainWindow.xaml.cs:1052,1459`): `WindowMode.OffScreen` parks the sidebar at `Left = -Width`. DWM still composites thumbnails (Opacity=0 alone wouldn't be enough), but the window is invisible to the user. Slide-in animates Left back to 0 on hover/hotkey.
 
 ## P/Invoke Organization
 
@@ -43,7 +63,7 @@ Win32 APIs are in `Native/PInvoke/` as partial classes on `Win32`:
 - `Win32.Long.cs` — Get/SetWindowLong, extended styles (WS_EX)
 - `Win32.WinEvent.cs` — SetWinEventHook, event constants
 
-DWM thumbnail APIs are in `Native/Interop/NativeMethods.cs`.
+Composition / DXGI bridges live in `Composition/Interop/` (CompositionInterop, Direct3DInterop, GraphicsCaptureItemInterop).
 
 ## Animation System (WIP)
 

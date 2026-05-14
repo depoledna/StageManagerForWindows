@@ -24,7 +24,6 @@
         <Style
             x:Key="SceneOpacity"
             TargetType="{x:Type Grid}">
-            <Setter Property="Opacity" Value="0.8" />
             <Setter Property="RenderTransformOrigin" Value="0.5,0.5" />
             <Setter Property="RenderTransform">
                 <Setter.Value>
@@ -33,7 +32,6 @@
             </Setter>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="true">
-                    <Setter Property="Opacity" Value="1" />
                     <Trigger.EnterActions>
                         <BeginStoryboard>
                             <Storyboard>
@@ -156,10 +154,13 @@
                             </ItemsControl.ItemsPanel>
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <controls:DwmThumbnail
+                                    <controls:CompositionThumbnail
                                         PreviewHandle="{Binding Handle}"
+                                        CornerRadius="8"
                                         Width="{Binding PreviewWidth}"
                                         Height="{Binding PreviewHeight}"
+                                        MirrorScale="{Binding RenderTransform.(ScaleTransform.ScaleX), RelativeSource={RelativeSource AncestorType=Grid, AncestorLevel=2}}"
+                                        MirrorOpacity="{Binding Opacity, RelativeSource={RelativeSource AncestorType=Grid, AncestorLevel=2}}"
                                         Margin="{Binding (ItemsControl.AlternationIndex), RelativeSource={RelativeSource AncestorType=ContentPresenter}, Converter={StaticResource IndexToOffsetMarginConverter}}"
                                         Panel.ZIndex="{Binding (ItemsControl.AlternationIndex), RelativeSource={RelativeSource AncestorType=ContentPresenter}, Converter={StaticResource IndexToZIndexConverter}}" />
                                 </DataTemplate>

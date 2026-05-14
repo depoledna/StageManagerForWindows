@@ -58,6 +58,7 @@ namespace StageManager.Native.PInvoke
             WS_EX_PALETTEWINDOW = (WS_EX_WINDOWEDGE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST),
             WS_EX_LAYERED = 0x00080000,
             WS_EX_NOINHERITLAYOUT = 0x00100000, // Disable inheritence of mirroring by children
+            WS_EX_NOREDIRECTIONBITMAP = 0x00200000,
             WS_EX_LAYOUTRTL = 0x00400000, // Right to left mirroring
             WS_EX_COMPOSITED = 0x02000000,
             WS_EX_NOACTIVATE = 0x08000000

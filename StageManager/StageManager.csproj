@@ -2,7 +2,7 @@
 
 	<PropertyGroup>
 		<OutputType>WinExe</OutputType>
-		<TargetFramework>net10.0-windows</TargetFramework>
+		<TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
 		<Nullable>enable</Nullable>
 		<UseWPF>true</UseWPF>
 		<UseWindowsForms>true</UseWindowsForms>
@@ -28,6 +28,8 @@
 		<PackageReference Include="AsyncAwaitBestPractices" Version="9.0.0" />
 		<PackageReference Include="ControlzEx" Version="7.0.1" />
 		<PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="2.0.1" />
+		<PackageReference Include="Vortice.Direct3D11" Version="3.7.0" />
+		<PackageReference Include="Vortice.DXGI" Version="3.7.0" />
 		<PackageReference Include="SharpHook" Version="6.1.2" />
 		<PackageReference Include="WpfScreenHelper" Version="2.1.1" />
 	</ItemGroup>

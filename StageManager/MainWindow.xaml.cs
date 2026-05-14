@@ -764,8 +764,22 @@ namespace StageManager
 
 		private void CancelWpfDrag()
 		{
-			if (_sidebarDragPhase == SidebarDragPhase.PastBuffer)
-				HideSidebarDragRealWindow();
+			// Restore alpha + original rect — WGC captures post-alpha, so an
+			// alpha=0 window leaves the sidebar tile rendering empty.
+			if (_sidebarDragWindow != null && _sidebarDragWindowRect != Rect.Empty)
+			{
+				if (_sidebarDragPhase == SidebarDragPhase.PastBuffer)
+					HideSidebarDragRealWindow();
+
+				var dpi = _sidebarDragDpi;
+				int x = (int)(_sidebarDragWindowRect.X * dpi.X);
+				int y = (int)(_sidebarDragWindowRect.Y * dpi.Y);
+				int w = (int)(_sidebarDragWindowRect.Width * dpi.X);
+				int h = (int)(_sidebarDragWindowRect.Height * dpi.Y);
+				Win32.SetWindowPos(_sidebarDragWindow.Handle, IntPtr.Zero,
+					x, y, w, h, Win32.SetWindowPosFlags.DoNotActivate);
+				Win32Helper.SetAlpha(_sidebarDragWindow.Handle, 255);
+			}
 			_sidebarDragGhost.Hide();
 			_sidebarDragPhase = SidebarDragPhase.None;
 			_wpfDragScene = null;
@@ -1234,11 +1248,24 @@ namespace StageManager
 				return Rect.Empty;
 
 			var loc = window.Location;
-			if (loc.Width <= 0 || loc.Height <= 0 || loc.X < -10000)
+			if (loc.Width <= 0 || loc.Height <= 0)
 				return Rect.Empty;
 
+			// If OpacityWindowStrategy has parked this window off-screen, use the saved
+			// original position so the animator targets the on-screen rect the window will
+			// occupy after Show — not its current parked location.
+			int x = loc.X, y = loc.Y;
+			if (Strategies.OpacityWindowStrategy.TryGetOriginalPosition(window.Handle, out var ox, out var oy))
+			{
+				x = ox; y = oy;
+			}
+			else if (loc.X < -10000)
+			{
+				return Rect.Empty;
+			}
+
 			var dpi = Dpi;
-			return new Rect(loc.X / dpi.X, loc.Y / dpi.Y, loc.Width / dpi.X, loc.Height / dpi.Y);
+			return new Rect(x / dpi.X, y / dpi.Y, loc.Width / dpi.X, loc.Height / dpi.Y);
 		}
 
 		private Rect GetSceneWindowBounds(SceneModel sceneModel)
