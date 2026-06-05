@@ -1148,6 +1148,10 @@ namespace StageManager
 				_iconOverlay.UpdateIcons(visible, s => GetSceneThumbnailScreenBounds(s), GetWorkAreaBounds());
 				_iconOverlay.SlideIn(-Width, duration, easingFunction);
 				Left = -Width;
+				// MainWindow's Topmost flip in the Mode setter pushed the
+				// sidebar above the icon overlay in the topmost z-stack.
+				// Re-assert overlay HWND_TOPMOST so icons render on top.
+				_iconOverlay.BringToFront();
 			}
 			else
 			{
@@ -1155,8 +1159,11 @@ namespace StageManager
 				_iconOverlay.SlideOut(-Width, duration, easingFunction);
 			}
 
+			// 0%-keyframe = current Left so outgoing (Left=0 → -Width) animates
+			// instead of snapping. Incoming sets Left=-Width above so it still
+			// picks up from the correct start.
 			var animation = new DoubleAnimationUsingKeyFrames { Duration = new Duration(duration) };
-			animation.KeyFrames.Add(new EasingDoubleKeyFrame(-Width, KeyTime.FromPercent(0)));
+			animation.KeyFrames.Add(new EasingDoubleKeyFrame(Left, KeyTime.FromPercent(0)));
 			animation.KeyFrames.Add(new EasingDoubleKeyFrame(newLeft, KeyTime.FromPercent(1.0), easingFunction));
 
 			BeginAnimation(LeftProperty, animation);

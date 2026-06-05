@@ -5,11 +5,13 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Interop;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
 using StageManager.Animations;
 using StageManager.Helpers;
 using StageManager.Model;
+using StageManager.Native.PInvoke;
 
 namespace StageManager.Controls
 {
@@ -375,6 +377,20 @@ namespace StageManager.Controls
             var transform = GetCanvasSlideTransform();
             var anim = Anim.From(0, offsetX, new Duration(duration), easing);
             transform.BeginAnimation(TranslateTransform.XProperty, anim, HandoffBehavior.SnapshotAndReplace);
+        }
+
+        // Re-asserts HWND_TOPMOST so the icon overlay sits above sibling
+        // topmost windows. Needed after MainWindow flips Topmost = true on
+        // unstow, which otherwise pushes the sidebar above the icons.
+        public void BringToFront()
+        {
+            if (_overlay == null) return;
+            var hwnd = new WindowInteropHelper(_overlay).Handle;
+            if (hwnd == IntPtr.Zero) return;
+            Win32.SetWindowPos(hwnd, Win32.HWND_TOPMOST, 0, 0, 0, 0,
+                Win32.SetWindowPosFlags.IgnoreMove |
+                Win32.SetWindowPosFlags.IgnoreResize |
+                Win32.SetWindowPosFlags.DoNotActivate);
         }
 
         private TranslateTransform GetCanvasSlideTransform()
