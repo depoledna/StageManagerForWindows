@@ -16,7 +16,7 @@
     WindowStyle="None"
     Title="MainWindow"
     Height="450"
-    Width="180"
+    Width="240"
     ShowActivated="False"
     Background="Transparent"
     Name="thisWindow">

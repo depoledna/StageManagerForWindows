@@ -11,7 +11,7 @@ namespace StageManager.Converters
     /// </summary>
     public sealed class IndexToOffsetMarginConverter : IValueConverter
     {
-        private const double Step = 6; // distance in pixels per index step
+        private const double Step = 10; // distance in pixels per index step
 
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {

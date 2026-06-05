@@ -327,20 +327,221 @@ namespace StageManager.Native
 
 		public Icon? ExtractIcon()
 		{
+			var title = Title;
+			var cls = Class;
+			Log.Info("ICON", $"ExtractIcon start: '{title}' class='{cls}' hwnd=0x{_handle:X64} exe='{_processExecutable}'");
+
+			var uwpIcon = TryGetUwpInnerIcon(_handle);
+			if (uwpIcon != null)
+			{
+				Log.Info("ICON", $"  ← UWP inner path returned icon ({uwpIcon.Width}x{uwpIcon.Height}) for '{title}'");
+				return uwpIcon;
+			}
+
+			var windowIcon = TryGetWindowIcon(_handle);
+			if (windowIcon != null)
+			{
+				Log.Info("ICON", $"  ← WM_GETICON/class path returned icon ({windowIcon.Width}x{windowIcon.Height}) for '{title}'");
+				return windowIcon;
+			}
+
 			if (string.IsNullOrWhiteSpace(_processExecutable))
+			{
+				Log.Info("ICON", $"  ← NULL (no process exe) for '{title}'");
 				return null;
+			}
 
 			try
 			{
-				return Icon.ExtractAssociatedIcon(_processExecutable);
+				var icon = Icon.ExtractAssociatedIcon(_processExecutable);
+				Log.Info("ICON", $"  ← ExtractAssociatedIcon('{_processExecutable}') = {(icon != null ? $"{icon.Width}x{icon.Height}" : "null")} for '{title}'");
+				return icon;
 			}
-			catch (IOException)
+			catch (IOException ex)
 			{
+				Log.Info("ICON", $"  ← ExtractAssociatedIcon FAILED: {ex.Message} for '{title}'");
 				return null;
 			}
 		}
 
+		private const uint WM_GETICON = 0x007F;
+		private const int ICON_SMALL = 0;
+		private const int ICON_BIG = 1;
+		private const int ICON_SMALL2 = 2;
+		private const int GCLP_HICON = -14;
+		private const int GCLP_HICONSM = -34;
+		private const uint SMTO_ABORTIFHUNG = 0x0002;
 
+		[DllImport("user32.dll", CharSet = CharSet.Auto)]
+		private static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam,
+			uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
 
+		[DllImport("user32.dll", EntryPoint = "GetClassLongPtr", CharSet = CharSet.Auto)]
+		private static extern IntPtr GetClassLongPtr64(IntPtr hWnd, int nIndex);
+
+		[DllImport("user32.dll", EntryPoint = "GetClassLong", CharSet = CharSet.Auto)]
+		private static extern uint GetClassLong32(IntPtr hWnd, int nIndex);
+
+		private static IntPtr GetClassLongPtr(IntPtr hWnd, int nIndex)
+			=> IntPtr.Size == 8 ? GetClassLongPtr64(hWnd, nIndex) : new IntPtr(unchecked((int)GetClassLong32(hWnd, nIndex)));
+
+		private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+		[DllImport("user32.dll")]
+		private static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+		private static IntPtr FindChildByClass(IntPtr parent, string className)
+		{
+			IntPtr found = IntPtr.Zero;
+			EnumChildWindows(parent, (h, _) =>
+			{
+				var buf = new StringBuilder(256);
+				Win32.GetClassName(h, buf, buf.Capacity + 1);
+				if (buf.ToString() == className)
+				{
+					found = h;
+					return false;
+				}
+				return true;
+			}, IntPtr.Zero);
+			return found;
+		}
+
+		private static Icon? TryGetUwpInnerIcon(IntPtr hwnd)
+		{
+			if (hwnd == IntPtr.Zero) return null;
+
+			var classBuf = new StringBuilder(256);
+			Win32.GetClassName(hwnd, classBuf, classBuf.Capacity + 1);
+			var cls = classBuf.ToString();
+			if (cls != "ApplicationFrameWindow")
+			{
+				Log.Info("ICON", $"  UWP unwrap skipped — class='{cls}' is not ApplicationFrameWindow");
+				return null;
+			}
+
+			var core = FindChildByClass(hwnd, "Windows.UI.Core.CoreWindow");
+			if (core == IntPtr.Zero)
+			{
+				Log.Info("ICON", "  UWP unwrap: no CoreWindow child found");
+				return null;
+			}
+			Log.Info("ICON", $"  UWP unwrap: CoreWindow=0x{core.ToInt64():X}");
+
+			Win32.GetWindowThreadProcessId(core, out var pid);
+			string? exe = null;
+			if (pid != 0)
+			{
+				try
+				{
+					using var proc = Process.GetProcessById((int)pid);
+					exe = proc.MainModule?.FileName;
+				}
+				catch (Exception ex)
+				{
+					Log.Info("ICON", $"  UWP unwrap: pid lookup failed: {ex.GetType().Name}: {ex.Message}");
+				}
+			}
+			Log.Info("ICON", $"  UWP unwrap: pid={pid} exe='{exe}'");
+
+			var override_ = TryGetKnownUwpOverrideIcon(exe);
+			if (override_ != null) return override_;
+
+			if (!string.IsNullOrWhiteSpace(exe))
+			{
+				try
+				{
+					var exeIcon = Icon.ExtractAssociatedIcon(exe);
+					Log.Info("ICON", $"  UWP unwrap: ExtractAssociatedIcon('{exe}') = {(exeIcon != null ? $"{exeIcon.Width}x{exeIcon.Height}" : "null")}");
+					if (exeIcon != null) return exeIcon;
+				}
+				catch (Exception ex)
+				{
+					Log.Info("ICON", $"  UWP unwrap: exe extract failed: {ex.Message}");
+				}
+			}
+
+			var coreIcon = TryGetWindowIcon(core);
+			if (coreIcon != null)
+			{
+				Log.Info("ICON", $"  UWP unwrap: CoreWindow WM_GETICON fallback returned icon ({coreIcon.Width}x{coreIcon.Height})");
+				return coreIcon;
+			}
+
+			Log.Info("ICON", "  UWP unwrap: nothing worked, returning null");
+			return null;
+		}
+
+		[DllImport("user32.dll")]
+		private static extern bool DestroyIcon(IntPtr hIcon);
+
+		// Known UWP apps where exe-extracted icon has wrong background/style — load the
+		// package's transparent PNG asset directly. Keyed by inner exe filename.
+		private static readonly Dictionary<string, string> UwpIconOverrides = new(StringComparer.OrdinalIgnoreCase)
+		{
+			["SystemSettings.exe"] = @"C:\Windows\ImmersiveControlPanel\Images\logo.targetsize-256_altform-unplated.png",
+		};
+
+		private static Icon? TryGetKnownUwpOverrideIcon(string? exe)
+		{
+			if (string.IsNullOrWhiteSpace(exe)) return null;
+			var name = Path.GetFileName(exe);
+			if (!UwpIconOverrides.TryGetValue(name, out var pngPath)) return null;
+			if (!File.Exists(pngPath))
+			{
+				Log.Info("ICON", $"  UWP override: PNG missing at '{pngPath}'");
+				return null;
+			}
+
+			try
+			{
+				using var bmp = new Bitmap(pngPath);
+				var hicon = bmp.GetHicon();
+				try
+				{
+					using var borrowed = Icon.FromHandle(hicon);
+					var icon = (Icon)borrowed.Clone();
+					Log.Info("ICON", $"  UWP override: loaded '{pngPath}' ({icon.Width}x{icon.Height})");
+					return icon;
+				}
+				finally { DestroyIcon(hicon); }
+			}
+			catch (Exception ex)
+			{
+				Log.Info("ICON", $"  UWP override FAILED: {ex.Message}");
+				return null;
+			}
+		}
+
+		private static Icon? TryGetWindowIcon(IntPtr hwnd)
+		{
+			if (hwnd == IntPtr.Zero) return null;
+
+			IntPtr hIcon = IntPtr.Zero;
+			int[] iconTypes = { ICON_BIG, ICON_SMALL2, ICON_SMALL };
+			foreach (var t in iconTypes)
+			{
+				if (SendMessageTimeout(hwnd, WM_GETICON, new IntPtr(t), IntPtr.Zero,
+					SMTO_ABORTIFHUNG, 100, out var result) != IntPtr.Zero && result != IntPtr.Zero)
+				{
+					hIcon = result;
+					break;
+				}
+			}
+
+			if (hIcon == IntPtr.Zero) hIcon = GetClassLongPtr(hwnd, GCLP_HICON);
+			if (hIcon == IntPtr.Zero) hIcon = GetClassLongPtr(hwnd, GCLP_HICONSM);
+			if (hIcon == IntPtr.Zero) return null;
+
+			try
+			{
+				using var borrowed = Icon.FromHandle(hIcon);
+				return (Icon)borrowed.Clone();
+			}
+			catch
+			{
+				return null;
+			}
+		}
 	}
 }

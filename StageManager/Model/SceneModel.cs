@@ -94,13 +94,13 @@ namespace StageManager.Model
 			if (maxWidth <= 0)
 				maxWidth = 1;
 
-			var scale = 120.0 / maxWidth; // baseline width of 120 px
+			var scale = 180.0 / maxWidth; // baseline width of 180 px
 
 			for (int i = 0; i < Windows.Count; i++)
 			{
 				var (origWidth, origHeight) = sizes[i];
-				var newWidth = Math.Max(30, origWidth * scale);
-				var newHeight = Math.Max(30, origHeight * scale);
+				var newWidth = Math.Max(50, origWidth * scale);
+				var newHeight = Math.Max(50, origHeight * scale);
 
 				var window = Windows[i];
 				window.PreviewWidth = newWidth;
