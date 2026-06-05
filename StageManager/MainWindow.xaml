@@ -27,7 +27,10 @@
             <Setter Property="RenderTransformOrigin" Value="0.5,0.5" />
             <Setter Property="RenderTransform">
                 <Setter.Value>
-                    <ScaleTransform ScaleX="1" ScaleY="1" />
+                    <TransformGroup>
+                        <ScaleTransform ScaleX="1" ScaleY="1" />
+                        <TranslateTransform X="0" Y="0" />
+                    </TransformGroup>
                 </Setter.Value>
             </Setter>
             <Style.Triggers>
@@ -36,14 +39,14 @@
                         <BeginStoryboard>
                             <Storyboard>
                                 <DoubleAnimation
-                                    Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)"
+                                    Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
                                     To="1.08" Duration="0:0:0.2">
                                     <DoubleAnimation.EasingFunction>
                                         <CubicEase EasingMode="EaseInOut" />
                                     </DoubleAnimation.EasingFunction>
                                 </DoubleAnimation>
                                 <DoubleAnimation
-                                    Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)"
+                                    Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"
                                     To="1.08" Duration="0:0:0.2">
                                     <DoubleAnimation.EasingFunction>
                                         <CubicEase EasingMode="EaseInOut" />
@@ -56,14 +59,14 @@
                         <BeginStoryboard>
                             <Storyboard>
                                 <DoubleAnimation
-                                    Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)"
+                                    Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
                                     To="1" Duration="0:0:0.2">
                                     <DoubleAnimation.EasingFunction>
                                         <CubicEase EasingMode="EaseInOut" />
                                     </DoubleAnimation.EasingFunction>
                                 </DoubleAnimation>
                                 <DoubleAnimation
-                                    Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)"
+                                    Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"
                                     To="1" Duration="0:0:0.2">
                                     <DoubleAnimation.EasingFunction>
                                         <CubicEase EasingMode="EaseInOut" />
@@ -77,14 +80,14 @@
                     <BeginStoryboard>
                         <Storyboard>
                             <DoubleAnimation
-                                Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)"
+                                Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
                                 To="0.96" Duration="0:0:0.08">
                                 <DoubleAnimation.EasingFunction>
                                     <CubicEase EasingMode="EaseOut" />
                                 </DoubleAnimation.EasingFunction>
                             </DoubleAnimation>
                             <DoubleAnimation
-                                Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)"
+                                Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"
                                 To="0.96" Duration="0:0:0.08">
                                 <DoubleAnimation.EasingFunction>
                                     <CubicEase EasingMode="EaseOut" />
@@ -97,14 +100,14 @@
                     <BeginStoryboard>
                         <Storyboard>
                             <DoubleAnimation
-                                Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)"
+                                Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
                                 To="1.08" Duration="0:0:0.12">
                                 <DoubleAnimation.EasingFunction>
                                     <CubicEase EasingMode="EaseOut" />
                                 </DoubleAnimation.EasingFunction>
                             </DoubleAnimation>
                             <DoubleAnimation
-                                Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)"
+                                Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"
                                 To="1.08" Duration="0:0:0.12">
                                 <DoubleAnimation.EasingFunction>
                                     <CubicEase EasingMode="EaseOut" />
@@ -133,7 +136,9 @@
                 <DataTemplate>
                     <Grid Margin="0,0,0,28"
                         Visibility="{Binding Visibility}"
-                        Style="{StaticResource SceneOpacity}">
+                        Style="{StaticResource SceneOpacity}"
+                        MouseMove="Scene_MouseMove"
+                        MouseLeave="Scene_MouseLeave">
                         <i:Interaction.Triggers>
                             <i:EventTrigger
                                 EventName="MouseLeftButtonUp">
@@ -159,7 +164,9 @@
                                         CornerRadius="8"
                                         Width="{Binding PreviewWidth}"
                                         Height="{Binding PreviewHeight}"
-                                        MirrorScale="{Binding RenderTransform.(ScaleTransform.ScaleX), RelativeSource={RelativeSource AncestorType=Grid, AncestorLevel=2}}"
+                                        MirrorScale="{Binding RenderTransform.(TransformGroup.Children)[0].(ScaleTransform.ScaleX), RelativeSource={RelativeSource AncestorType=Grid, AncestorLevel=2}}"
+                                        MirrorTranslateX="{Binding RenderTransform.(TransformGroup.Children)[1].(TranslateTransform.X), RelativeSource={RelativeSource AncestorType=Grid, AncestorLevel=2}}"
+                                        MirrorTranslateY="{Binding RenderTransform.(TransformGroup.Children)[1].(TranslateTransform.Y), RelativeSource={RelativeSource AncestorType=Grid, AncestorLevel=2}}"
                                         MirrorOpacity="{Binding Opacity, RelativeSource={RelativeSource AncestorType=Grid, AncestorLevel=2}}"
                                         Margin="{Binding (ItemsControl.AlternationIndex), RelativeSource={RelativeSource AncestorType=ContentPresenter}, Converter={StaticResource IndexToOffsetMarginConverter}}"
                                         Panel.ZIndex="{Binding (ItemsControl.AlternationIndex), RelativeSource={RelativeSource AncestorType=ContentPresenter}, Converter={StaticResource IndexToZIndexConverter}}" />

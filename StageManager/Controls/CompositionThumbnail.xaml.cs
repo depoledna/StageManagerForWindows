@@ -31,9 +31,10 @@ namespace StageManager.Controls
 		private float _lastAppliedOpacity = 1f;
 
 		// Each side. Total HWND inflation = 1 + 2 * HoverHeadroom.
-		// 6% per side accommodates MirrorScale up to ~1.12 — current animation
-		// peaks at 1.08 (hover) / 1.08 (click bounce up) with margin to spare.
-		private const double HoverHeadroom = 0.06;
+		// 10% per side covers worst-case lateral overflow at peak hover:
+		// scale 1.08 → 4% sprite overflow + 10px MirrorTranslateX pull
+		// = ~14px on a 180px-wide thumb. 10% headroom = 18px slack.
+		private const double HoverHeadroom = 0.10;
 
 		public CompositionThumbnail()
 		{
@@ -98,6 +99,32 @@ namespace StageManager.Controls
 		{
 			get => (double)GetValue(MirrorScaleProperty);
 			set => SetValue(MirrorScaleProperty, value);
+		}
+
+		// Mirrors the WPF ancestor's animated TranslateTransform.X/Y onto the
+		// SpriteVisual. Values are in DIPs; ApplyTransform converts to pixels.
+		public static readonly DependencyProperty MirrorTranslateXProperty = DependencyProperty.Register(
+			nameof(MirrorTranslateX),
+			typeof(double),
+			typeof(CompositionThumbnail),
+			new PropertyMetadata(0.0, OnTransformInputChanged));
+
+		public double MirrorTranslateX
+		{
+			get => (double)GetValue(MirrorTranslateXProperty);
+			set => SetValue(MirrorTranslateXProperty, value);
+		}
+
+		public static readonly DependencyProperty MirrorTranslateYProperty = DependencyProperty.Register(
+			nameof(MirrorTranslateY),
+			typeof(double),
+			typeof(CompositionThumbnail),
+			new PropertyMetadata(0.0, OnTransformInputChanged));
+
+		public double MirrorTranslateY
+		{
+			get => (double)GetValue(MirrorTranslateYProperty);
+			set => SetValue(MirrorTranslateYProperty, value);
 		}
 
 		// Mirrors the WPF ancestor's animated Opacity onto the SpriteVisual.
@@ -274,7 +301,10 @@ namespace StageManager.Controls
 			// Transform applied to the HWND-sized container — center is HWND/2,
 			// which coincides with the inner sprite's center (sprite is
 			// centered inside the container).
-			var matrix = ComposeTransform(SkewAngleDegrees, MirrorScale, _lastHwndPixelWidth, _lastHwndPixelHeight);
+			var dpi = VisualTreeHelper.GetDpi(this);
+			var translateXPx = MirrorTranslateX * dpi.DpiScaleX;
+			var translateYPx = MirrorTranslateY * dpi.DpiScaleY;
+			var matrix = ComposeTransform(SkewAngleDegrees, MirrorScale, translateXPx, translateYPx, _lastHwndPixelWidth, _lastHwndPixelHeight);
 			if (matrix == _lastAppliedTransform) return;
 			_lastAppliedTransform = matrix;
 			_session.SetTransformMatrix(matrix);
@@ -289,10 +319,12 @@ namespace StageManager.Controls
 			_session.SetOpacity(op);
 		}
 
-		private static Matrix4x4 ComposeTransform(double angleDegrees, double scale, double pixelWidth, double pixelHeight)
+		private static Matrix4x4 ComposeTransform(double angleDegrees, double scale, double translateXPx, double translateYPx, double pixelWidth, double pixelHeight)
 		{
 			var s = (float)scale;
-			if (angleDegrees == 0.0 && s == 1f)
+			var tx = (float)translateXPx;
+			var ty = (float)translateYPx;
+			if (angleDegrees == 0.0 && s == 1f && tx == 0f && ty == 0f)
 				return Matrix4x4.Identity;
 
 			var cx = (float)(pixelWidth / 2.0);
@@ -307,8 +339,9 @@ namespace StageManager.Controls
 				inner = inner * skew;
 			}
 
+			// Center → transform → re-center, then bias re-center by translate.
 			var t1 = Matrix4x4.CreateTranslation(-cx, -cy, 0);
-			var t2 = Matrix4x4.CreateTranslation(cx, cy, 0);
+			var t2 = Matrix4x4.CreateTranslation(cx + tx, cy + ty, 0);
 			return t1 * inner * t2;
 		}
 

@@ -619,6 +619,74 @@ namespace StageManager
 			Log.Info("DRAG", $"WPF mousedown on '{scene.Title}' at ({_wpfDragStartPoint.X:F0},{_wpfDragStartPoint.Y:F0})");
 		}
 
+		// Max DIPs the scene tile pulls toward the cursor at the Grid edge.
+		private const double ScenePullStrength = 5.0;
+
+		// Pursuit is direct-set (no animation) so the tile snaps to cursor pos.
+		// Only recoil-to-zero is animated, with EaseOut for soft release.
+		private static readonly CubicEase _scenePullEase = CreateFrozenEase(EasingMode.EaseOut);
+		private static readonly Duration _scenePullRecoilDuration = new Duration(TimeSpan.FromMilliseconds(220));
+
+		private static CubicEase CreateFrozenEase(EasingMode mode)
+		{
+			var ease = new CubicEase { EasingMode = mode };
+			ease.Freeze();
+			return ease;
+		}
+
+		// Pointer-driven directional pull: cursor → tile center vector mapped to
+		// TranslateTransform.X/Y on the scene Grid. CompositionThumbnail mirrors
+		// this via MirrorTranslateX/Y so the HwndHost surface follows in lockstep.
+		// Pursuit is unanimated — tile snaps to cursor position on every move.
+		// Recoil keeps an EaseOut on Leave for a softer release.
+		private void Scene_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+		{
+			// Skip while a button is pressed — drag logic owns the cursor then.
+			if (e.LeftButton == System.Windows.Input.MouseButtonState.Pressed) return;
+			if (sender is not Grid grid) return;
+			if (grid.ActualWidth <= 0 || grid.ActualHeight <= 0) return;
+			if (grid.RenderTransform is not TransformGroup tg) return;
+			if (tg.Children.Count < 2 || tg.Children[1] is not TranslateTransform tt) return;
+
+			var pos = e.GetPosition(grid);
+			var halfW = grid.ActualWidth / 2.0;
+			var halfH = grid.ActualHeight / 2.0;
+			var nx = Math.Clamp((pos.X - halfW) / halfW, -1.0, 1.0);
+			var ny = Math.Clamp((pos.Y - halfH) / halfH, -1.0, 1.0);
+
+			// Clear any in-flight recoil animation so direct property writes
+			// actually take effect (otherwise the running anim wins on every
+			// render tick until it completes).
+			tt.BeginAnimation(TranslateTransform.XProperty, null);
+			tt.BeginAnimation(TranslateTransform.YProperty, null);
+			tt.X = nx * ScenePullStrength;
+			tt.Y = ny * ScenePullStrength;
+		}
+
+		private void Scene_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
+		{
+			if (sender is not Grid grid) return;
+			if (grid.RenderTransform is not TransformGroup tg) return;
+			if (tg.Children.Count < 2 || tg.Children[1] is not TranslateTransform tt) return;
+
+			var curX = (double)tt.GetValue(TranslateTransform.XProperty);
+			var curY = (double)tt.GetValue(TranslateTransform.YProperty);
+			tt.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation
+			{
+				From = curX,
+				To = 0,
+				Duration = _scenePullRecoilDuration,
+				EasingFunction = _scenePullEase
+			});
+			tt.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation
+			{
+				From = curY,
+				To = 0,
+				Duration = _scenePullRecoilDuration,
+				EasingFunction = _scenePullEase
+			});
+		}
+
 		private void ScenesControl_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
 		{
 			if (_wpfDragScene == null) return;
