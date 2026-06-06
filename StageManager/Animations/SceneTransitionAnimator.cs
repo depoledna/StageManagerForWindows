@@ -2,7 +2,7 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
-using System.Windows.Controls;
+using System.Windows.Media;
 using System.Windows.Media.Animation;
 using StageManager.Controls;
 using StageManager.Helpers;
@@ -39,85 +39,102 @@ namespace StageManager.Animations
 		}
 
 		/// <summary>
-		/// Animates placeholders for both the incoming and outgoing scenes simultaneously.
+		/// Flies the incoming and outgoing scenes simultaneously as live cards: the
+		/// incoming scene (clicked) travels sidebar → stage unskewing 31° → flat; the
+		/// outgoing scene (current) travels stage → sidebar skewing flat → 31°. The
+		/// incoming card borrows its tray tile's capture; the outgoing card — which
+		/// has no tray tile while current — captures its window into an owned session.
+		/// Either side falls back to a static icon card when no capture is available.
 		/// Pass Rect.Empty for outgoingSource to skip the outgoing animation.
 		/// </summary>
 		public Task AnimateSceneTransitionAsync(
 			Rect overlayBounds,
-			Rect incomingSource, Rect incomingTarget, SceneModel incomingScene,
-			Rect outgoingSource, Rect outgoingTarget, SceneModel? outgoingScene)
+			Rect incomingSource, Rect incomingTarget, SceneModel incomingScene, CompositionThumbnail? incomingTile,
+			Rect outgoingSource, Rect outgoingTarget, SceneModel? outgoingScene, IntPtr outgoingHandle,
+			Point dpi, double cornerRadius)
 		{
 			if (_isAnimating) return Task.CompletedTask;
 			_isAnimating = true;
 			var tcs = new TaskCompletionSource<bool>();
 
-			// Hoisted so the catch block can clean up partial state (placeholders already
-			// added to Canvas.Children before the exception). Otherwise they leak forever
-			// and stale ghost rectangles compound across failures.
-			Border? inPlaceholder = null;
-			Border? outPlaceholder = null;
+			// Hoisted so the catch block can release cards already added to the overlay.
+			IFlyingCard? incoming = null;
+			IFlyingCard? outgoing = null;
 
 			try
 			{
 				EnsureOverlay(overlayBounds);
 
-				var duration = new Duration(TimeSpan.FromMilliseconds(AnimationDurationMs));
-				var easing = new PowerEase { EasingMode = EasingMode.EaseOut };
-				var storyboard = new Storyboard();
+				incoming = LiveCardHost.TryBorrow(_overlay, incomingTile, dpi, cornerRadius) as IFlyingCard
+					?? new BorderCard(_overlay, incomingScene?.Windows.FirstOrDefault()?.Icon);
+				incoming.Update(incomingSource, CompositionThumbnail.TrayTiltDegrees);
+				Log.Info("ANIM", $"Incoming: {Fmt(incomingSource)} → {Fmt(incomingTarget)} (live={incoming is LiveCardHost})");
 
-				// --- Incoming placeholder (sidebar → window position) ---
-				var inIcon = incomingScene?.Windows.FirstOrDefault()?.Icon;
-				inPlaceholder = PlaceholderFactory.Create(inIcon);
-				var inFrom = incomingSource.ToCanvas(_overlay);
-				var inTo = incomingTarget.ToCanvas(_overlay);
-				// Incoming = clicked scene travelling to the stage: tray skew → flat.
-				SetupPlaceholder(inPlaceholder, storyboard, duration, easing, inFrom, inTo,
-					CompositionThumbnail.TrayTiltDegrees, 0.0);
-				_overlay.Canvas.Children.Add(inPlaceholder);
-
-				Log.Info("ANIM", $"Incoming: ({inFrom.X:F0},{inFrom.Y:F0} {inFrom.Width:F0}x{inFrom.Height:F0}) → ({inTo.X:F0},{inTo.Y:F0} {inTo.Width:F0}x{inTo.Height:F0})");
-
-				// --- Outgoing placeholder (window position → sidebar) ---
-				if (outgoingSource != Rect.Empty && outgoingScene != null)
+				bool hasOutgoing = outgoingSource != Rect.Empty && outgoingScene != null;
+				if (hasOutgoing)
 				{
-					var outIcon = outgoingScene.Windows.FirstOrDefault()?.Icon;
-					outPlaceholder = PlaceholderFactory.Create(outIcon);
-					var outFrom = outgoingSource.ToCanvas(_overlay);
-					var outTo = outgoingTarget.ToCanvas(_overlay);
-					// Outgoing = restored scene returning to the tray: flat → tray skew.
-					SetupPlaceholder(outPlaceholder, storyboard, duration, easing, outFrom, outTo,
-						0.0, CompositionThumbnail.TrayTiltDegrees);
-					_overlay.Canvas.Children.Add(outPlaceholder);
-
-					Log.Info("ANIM", $"Outgoing: ({outFrom.X:F0},{outFrom.Y:F0} {outFrom.Width:F0}x{outFrom.Height:F0}) → ({outTo.X:F0},{outTo.Y:F0} {outTo.Width:F0}x{outTo.Height:F0})");
+					outgoing = LiveCardHost.TryCreateOwned(_overlay, outgoingHandle, dpi, cornerRadius) as IFlyingCard
+						?? new BorderCard(_overlay, outgoingScene!.Windows.FirstOrDefault()?.Icon);
+					outgoing.Update(outgoingSource, 0.0);
+					Log.Info("ANIM", $"Outgoing: {Fmt(outgoingSource)} → {Fmt(outgoingTarget)} (live={outgoing is LiveCardHost})");
 				}
 
-				Log.Info("ANIM", $"Overlay: {_overlay.Left:F0},{_overlay.Top:F0} {_overlay.Width:F0}x{_overlay.Height:F0}, placeholders={_overlay.Canvas.Children.Count}");
 				_overlay.Show();
 
-				storyboard.Completed += (s, e) =>
-				{
-					Log.Info("ANIM", "Storyboard completed, removing placeholders");
-					if (inPlaceholder != null) _overlay.Canvas.Children.Remove(inPlaceholder);
-					if (outPlaceholder != null) _overlay.Canvas.Children.Remove(outPlaceholder);
-					if (_overlay.Canvas.Children.Count == 0) _overlay.Hide();
-					_isAnimating = false;
-					tcs.TrySetResult(true);
-				};
-
-				storyboard.Begin();
+				RunFlight(tcs,
+					incoming, incomingSource, incomingTarget,
+					outgoing, outgoingSource, outgoingTarget);
 			}
 			catch (Exception ex)
 			{
 				Log.Info("ANIM", $"Transition failed: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-				if (inPlaceholder != null) _overlay?.Canvas.Children.Remove(inPlaceholder);
-				if (outPlaceholder != null) _overlay?.Canvas.Children.Remove(outPlaceholder);
+				incoming?.Release();
+				outgoing?.Release();
 				_isAnimating = false;
 				_overlay?.Hide();
 				tcs.TrySetResult(false);
 			}
 
 			return tcs.Task;
+		}
+
+		/// <summary>
+		/// Drives both cards from a per-frame rendering tick over <see cref="AnimationDurationMs"/>.
+		/// A Storyboard can move the host rect but can't animate the perspective matrix,
+		/// so size + 3D tilt are interpolated here and pushed to the live session each frame.
+		/// </summary>
+		private void RunFlight(TaskCompletionSource<bool> tcs,
+			IFlyingCard? incoming, Rect inFrom, Rect inTo,
+			IFlyingCard? outgoing, Rect outFrom, Rect outTo)
+		{
+			var easing = new PowerEase { EasingMode = EasingMode.EaseOut };
+			double durationMs = AnimationDurationMs;
+			TimeSpan? start = null;
+			EventHandler? handler = null;
+
+			handler = (s, e) =>
+			{
+				var now = ((RenderingEventArgs)e).RenderingTime;
+				start ??= now;
+				double u = Math.Clamp((now - start.Value).TotalMilliseconds / durationMs, 0.0, 1.0);
+				double k = easing.Ease(u);
+
+				incoming?.Update(LerpRect(inFrom, inTo, k), Lerp(CompositionThumbnail.TrayTiltDegrees, 0.0, k));
+				outgoing?.Update(LerpRect(outFrom, outTo, k), Lerp(0.0, CompositionThumbnail.TrayTiltDegrees, k));
+
+				if (u >= 1.0)
+				{
+					CompositionTarget.Rendering -= handler;
+					incoming?.Release();
+					outgoing?.Release();
+					if (_overlay != null && _overlay.Canvas.Children.Count == 0) _overlay.Hide();
+					_isAnimating = false;
+					Log.Info("ANIM", "Flight completed");
+					tcs.TrySetResult(true);
+				}
+			};
+
+			CompositionTarget.Rendering += handler;
 		}
 
 		[System.Diagnostics.CodeAnalysis.MemberNotNull(nameof(_overlay))]
@@ -127,31 +144,12 @@ namespace StageManager.Animations
 			_overlay.PositionFrom(bounds);
 		}
 
-		private static void SetupPlaceholder(Border placeholder, Storyboard storyboard,
-			Duration duration, IEasingFunction easing, Rect from, Rect to,
-			double fromAngle, double toAngle)
-		{
-			Canvas.SetLeft(placeholder, from.X);
-			Canvas.SetTop(placeholder, from.Y);
-			placeholder.Width = from.Width;
-			placeholder.Height = from.Height;
+		private static double Lerp(double a, double b, double t) => a + (b - a) * t;
 
-			storyboard.Children.Add(Anim.Storyboard(from.X, to.X, duration, easing, placeholder, Canvas.LeftProperty));
-			storyboard.Children.Add(Anim.Storyboard(from.Y, to.Y, duration, easing, placeholder, Canvas.TopProperty));
-			storyboard.Children.Add(Anim.Storyboard(from.Width, to.Width, duration, easing, placeholder, FrameworkElement.WidthProperty));
-			storyboard.Children.Add(Anim.Storyboard(from.Height, to.Height, duration, easing, placeholder, FrameworkElement.HeightProperty));
+		private static Rect LerpRect(Rect a, Rect b, double t) =>
+			new Rect(Lerp(a.X, b.X, t), Lerp(a.Y, b.Y, t), Lerp(a.Width, b.Width, t), Lerp(a.Height, b.Height, t));
 
-			// Tilt: skewed in the tray, flat on the stage. Approximated as a
-			// horizontal scale (ScaleX = cos θ) about the placeholder centre —
-			// the orthographic projection of the tray's Y-axis rotation, since
-			// .NET 10 WPF no longer ships PlaneProjection.
-			var fromSx = Math.Cos(fromAngle * Math.PI / 180.0);
-			var toSx = Math.Cos(toAngle * Math.PI / 180.0);
-			var sx = new DoubleAnimation(fromSx, toSx, duration) { EasingFunction = easing };
-			Storyboard.SetTarget(sx, placeholder);
-			Storyboard.SetTargetProperty(sx, new PropertyPath("(UIElement.RenderTransform).(ScaleTransform.ScaleX)"));
-			storyboard.Children.Add(sx);
-		}
+		private static string Fmt(Rect r) => $"({r.X:F0},{r.Y:F0} {r.Width:F0}x{r.Height:F0})";
 
 		public void Dispose()
 		{

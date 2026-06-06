@@ -1,21 +1,21 @@
 using System;
 using System.Linq;
 using System.Windows;
-using System.Windows.Controls;
-using StageManager.Helpers;
+using StageManager.Controls;
 using StageManager.Model;
 
 namespace StageManager.Animations
 {
 	/// <summary>
-	/// Manages the drag ghost for WPF sidebar drag (Flow 2: sidebar → active screen).
-	/// Borrows the overlay from SceneTransitionAnimator to render a placeholder
-	/// that follows the cursor during drag.
+	/// Drag ghost for the sidebar → active-screen flow. Borrows the tray tile's
+	/// live capture (so the very frames the user sees travel and unskew with the
+	/// cursor), falling back to a static icon card when the tile has no running
+	/// session yet. Both paths share <see cref="IFlyingCard"/>.
 	/// </summary>
 	internal class SidebarDragGhost
 	{
 		private readonly SceneTransitionAnimator _animator;
-		private Border? _ghost;
+		private IFlyingCard? _card;
 		private bool _isActive;
 
 		public bool IsActive => _isActive;
@@ -25,7 +25,8 @@ namespace StageManager.Animations
 			_animator = animator;
 		}
 
-		public void Show(Rect overlayBounds, Rect ghostRect, SceneModel scene)
+		public void Show(Rect overlayBounds, Rect ghostRect, SceneModel scene,
+			CompositionThumbnail? tile, Point dpi, double cornerRadius)
 		{
 			if (_animator.IsAnimating) return;
 			_isActive = true;
@@ -33,18 +34,10 @@ namespace StageManager.Animations
 			try
 			{
 				var overlay = _animator.GetOrCreateOverlay(overlayBounds);
-
-				var icon = scene?.Windows.FirstOrDefault()?.Icon;
-				_ghost = PlaceholderFactory.Create(icon);
-				var ghostCanvas = ghostRect.ToCanvas(overlay);
-				Canvas.SetLeft(_ghost, ghostCanvas.X);
-				Canvas.SetTop(_ghost, ghostCanvas.Y);
-				_ghost.Width = ghostCanvas.Width;
-				_ghost.Height = ghostCanvas.Height;
-
-				overlay.Canvas.Children.Add(_ghost);
+				_card = LiveCardHost.TryBorrow(overlay, tile, dpi, cornerRadius) as IFlyingCard
+					?? new BorderCard(overlay, scene?.Windows.FirstOrDefault()?.Icon);
+				_card.Update(ghostRect, CompositionThumbnail.TrayTiltDegrees);
 				overlay.Show();
-				Log.Info("DRAG", $"Ghost shown at ({ghostRect.X:F0},{ghostRect.Y:F0} {ghostRect.Width:F0}x{ghostRect.Height:F0}) overlay=({overlayBounds.X:F0},{overlayBounds.Y:F0} {overlayBounds.Width:F0}x{overlayBounds.Height:F0})");
 			}
 			catch (Exception ex)
 			{
@@ -53,33 +46,25 @@ namespace StageManager.Animations
 			}
 		}
 
-		public void UpdatePositionAndSize(double screenX, double screenY, double width, double height)
+		/// <summary>
+		/// Position/size the ghost. (screenX, screenY) is the base rect's top-left
+		/// in logical screen units; skewDegrees is the 3D Y-tilt (tray angle in the
+		/// sidebar, lerped to 0 across the buffer).
+		/// </summary>
+		public void UpdatePositionAndSize(double screenX, double screenY, double width, double height, double skewDegrees)
 		{
-			if (_ghost == null) return;
-			var overlay = _animator.Overlay;
-			if (overlay == null) return;
-			var canvasPoint = new Point(screenX, screenY).ToCanvas(overlay);
-			Canvas.SetLeft(_ghost, canvasPoint.X);
-			Canvas.SetTop(_ghost, canvasPoint.Y);
-			_ghost.Width = Math.Max(1, width);
-			_ghost.Height = Math.Max(1, height);
+			_card?.Update(new Rect(screenX, screenY, Math.Max(1, width), Math.Max(1, height)), skewDegrees);
 		}
 
-		public void SetVisible(bool visible)
-		{
-			if (_ghost == null) return;
-			_ghost.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-		}
+		public void SetVisible(bool visible) => _card?.SetVisible(visible);
 
 		public void Hide()
 		{
-			if (_ghost != null)
-			{
-				_animator.Overlay?.Canvas.Children.Remove(_ghost);
-				_ghost = null;
-			}
-			if (_animator.Overlay != null && _animator.Overlay.Canvas.Children.Count == 0)
-				_animator.Overlay.Hide();
+			var overlay = _animator.Overlay;
+			_card?.Release();
+			_card = null;
+			if (overlay is not null && overlay.Canvas.Children.Count == 0)
+				overlay.Hide();
 			_isActive = false;
 			Log.Info("DRAG", "Ghost hidden");
 		}

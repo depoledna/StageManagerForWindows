@@ -788,6 +788,13 @@ namespace StageManager
 
 		public bool IsCurrentScene(Scene? scene) => object.Equals(scene, _current);
 
+		/// <summary>
+		/// Re-stows a window off-screen via the active strategy. Used to return a
+		/// dragged tray window to its parked state when a sidebar drag is cancelled,
+		/// so it stays hidden on stage while the live tile keeps capturing it.
+		/// </summary>
+		public void ParkWindow(IWindow window) => WindowStrategy.Hide(window);
+
 		public bool IsDesktopView => _current is null;
 
 		public IEnumerable<IWindow> GetCurrentWindows() => _current?.Windows ?? GetSceneableWindows();

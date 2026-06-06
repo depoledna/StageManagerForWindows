@@ -34,6 +34,12 @@ namespace StageManager
 		private const int TIMERINTERVAL_MILLISECONDS = 500;
 		private const int MAX_SCENES = 6;
 		private const string APP_NAME = "StageManager";
+		// Fraction of sidebar width at which a normal window's left edge triggers auto-stow.
+		// Lower = boundary sits further left, so wider windows keep the tray visible (more window estate).
+		private const double STOW_OVERLAP_FRACTION = 0.25;
+		// Mirrors CompositionThumbnail CornerRadius="8" in MainWindow.xaml so the
+		// borrowed live drag ghost keeps the same rounded corners as the tray tile.
+		private const double SidebarThumbCornerRadius = 8.0;
 		private IntPtr _thisHandle;
 		private TaskPoolGlobalHook? _hook;
 		private volatile bool _trayMenuOpen;
@@ -215,10 +221,13 @@ namespace StageManager
 			if (sidebarSlot != Rect.Empty && incomingTarget != Rect.Empty)
 			{
 				Log.Info("TRANSITION", "Starting animation");
+					var incomingTile = FindSceneThumbnail(sceneModel, sceneModel.Windows.FirstOrDefault()?.Handle ?? IntPtr.Zero);
+					var outgoingHandle = outgoingModel?.Windows.FirstOrDefault()?.Handle ?? IntPtr.Zero;
 				await _sceneTransitionAnimator.AnimateSceneTransitionAsync(
 					GetWorkAreaBounds(),
-					sidebarSlot, incomingTarget, sceneModel,
-					outgoingSource, sidebarSlot, outgoingModel);
+					sidebarSlot, incomingTarget, sceneModel, incomingTile,
+					outgoingSource, sidebarSlot, outgoingModel, outgoingHandle,
+						dpi, SidebarThumbCornerRadius);
 				Log.Info("TRANSITION", "Animation completed");
 			}
 
@@ -728,7 +737,9 @@ namespace StageManager
 
 				var overlayBounds = GetWorkAreaBounds();
 				if (_sidebarDragThumbRect != Rect.Empty && overlayBounds != Rect.Empty)
-					_sidebarDragGhost.Show(overlayBounds, _sidebarDragThumbRect, _wpfDragScene);
+					_sidebarDragGhost.Show(overlayBounds, _sidebarDragThumbRect, _wpfDragScene,
+						FindSceneThumbnail(_wpfDragScene, _sidebarDragWindow?.Handle ?? IntPtr.Zero),
+						_sidebarDragDpi, SidebarThumbCornerRadius);
 				else
 					Log.Info("DRAG", $"Ghost skipped: overlay={overlayBounds == Rect.Empty} thumb={_sidebarDragThumbRect == Rect.Empty}");
 			}
@@ -758,7 +769,8 @@ namespace StageManager
 					cursorLogicalX - _sidebarDragThumbRect.Width / 2,
 					cursorLogicalY - _sidebarDragThumbRect.Height / 2,
 					_sidebarDragThumbRect.Width,
-					_sidebarDragThumbRect.Height);
+					_sidebarDragThumbRect.Height,
+						CompositionThumbnail.TrayTiltDegrees);
 			}
 			else if (pos.X <= _sidebarDragBufferRight)
 			{
@@ -771,7 +783,8 @@ namespace StageManager
 				_sidebarDragGhost.UpdatePositionAndSize(
 					cursorLogicalX - ghostW / 2,
 					cursorLogicalY - ghostH / 2,
-					ghostW, ghostH);
+					ghostW, ghostH,
+						DragDropManager.Lerp(CompositionThumbnail.TrayTiltDegrees, 0.0, t));
 			}
 			else
 			{
@@ -834,19 +847,32 @@ namespace StageManager
 		{
 			// Restore alpha + original rect — WGC captures post-alpha, so an
 			// alpha=0 window leaves the sidebar tile rendering empty.
-			if (_sidebarDragWindow != null && _sidebarDragWindowRect != Rect.Empty)
+			if (_sidebarDragWindow != null)
 			{
 				if (_sidebarDragPhase == SidebarDragPhase.PastBuffer)
 					HideSidebarDragRealWindow();
 
-				var dpi = _sidebarDragDpi;
-				int x = (int)(_sidebarDragWindowRect.X * dpi.X);
-				int y = (int)(_sidebarDragWindowRect.Y * dpi.Y);
-				int w = (int)(_sidebarDragWindowRect.Width * dpi.X);
-				int h = (int)(_sidebarDragWindowRect.Height * dpi.Y);
-				Win32.SetWindowPos(_sidebarDragWindow.Handle, IntPtr.Zero,
-					x, y, w, h, Win32.SetWindowPosFlags.DoNotActivate);
-				Win32Helper.SetAlpha(_sidebarDragWindow.Handle, 255);
+				var sourceScene = _wpfDragScene?.Scene;
+				if (sourceScene != null && SceneManager.IsCurrentScene(sourceScene)
+					&& _sidebarDragWindowRect != Rect.Empty)
+				{
+					// Current (on-stage) scene: keep the window visible at its home rect.
+					var dpi = _sidebarDragDpi;
+					int x = (int)(_sidebarDragWindowRect.X * dpi.X);
+					int y = (int)(_sidebarDragWindowRect.Y * dpi.Y);
+					int w = (int)(_sidebarDragWindowRect.Width * dpi.X);
+					int h = (int)(_sidebarDragWindowRect.Height * dpi.Y);
+					Win32.SetWindowPos(_sidebarDragWindow.Handle, IntPtr.Zero,
+						x, y, w, h, Win32.SetWindowPosFlags.DoNotActivate);
+					Win32Helper.SetAlpha(_sidebarDragWindow.Handle, 255);
+				}
+				else
+				{
+					// Tray (stowed) scene: re-park off-screen so it stays hidden but
+					// the live tile keeps capturing it (alpha stays 255 for WGC).
+					SceneManager.ParkWindow(_sidebarDragWindow);
+					Win32Helper.SetAlpha(_sidebarDragWindow.Handle, 255);
+				}
 			}
 			_sidebarDragGhost.Hide();
 			_sidebarDragPhase = SidebarDragPhase.None;
@@ -1082,6 +1108,34 @@ namespace StageManager
 
 		private int CurrentFilterGen(Guid id) => _filterAnimGen.TryGetValue(id, out var c) ? c : 0;
 
+		/// <summary>
+		/// Locate the live tile (CompositionThumbnail) for a specific window inside
+		/// a scene's container, matched by capture handle. Null if the container
+		/// isn't realised or no tile owns that handle.
+		/// </summary>
+		private CompositionThumbnail? FindSceneThumbnail(SceneModel scene, IntPtr handle)
+		{
+			if (handle == IntPtr.Zero) return null;
+			var container = scenesControl.ItemContainerGenerator.ContainerFromItem(scene) as DependencyObject;
+			if (container is null) return null;
+			foreach (var ct in EnumerateVisualDescendants<CompositionThumbnail>(container))
+				if (ct.PreviewHandle == handle) return ct;
+			return null;
+		}
+
+		private static System.Collections.Generic.IEnumerable<T> EnumerateVisualDescendants<T>(DependencyObject root)
+			where T : DependencyObject
+		{
+			int count = VisualTreeHelper.GetChildrenCount(root);
+			for (int i = 0; i < count; i++)
+			{
+				var child = VisualTreeHelper.GetChild(root, i);
+				if (child is T match) yield return match;
+				foreach (var nested in EnumerateVisualDescendants<T>(child))
+					yield return nested;
+			}
+		}
+
 		private FrameworkElement? TryGetSceneInnerGrid(SceneModel s)
 		{
 			var container = scenesControl.ItemContainerGenerator.ContainerFromItem(s) as FrameworkElement;
@@ -1243,7 +1297,7 @@ namespace StageManager
 			if (SceneManager.IsDesktopView)
 				return;
 
-			bool doesOverlap(IWindowLocation loc) => loc.State == Native.Window.WindowState.Maximized || (loc.State == Native.Window.WindowState.Normal && (loc.X * 2) < _lastWidth);
+			bool doesOverlap(IWindowLocation loc) => loc.State == Native.Window.WindowState.Maximized || (loc.State == Native.Window.WindowState.Normal && loc.X < _lastWidth * STOW_OVERLAP_FRACTION);
 
 			var anyOverlappingWindows = windows.Any(w => doesOverlap(w.Location));
 
