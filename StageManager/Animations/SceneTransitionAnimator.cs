@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media.Animation;
+using StageManager.Controls;
 using StageManager.Helpers;
 using StageManager.Model;
 
@@ -69,7 +70,9 @@ namespace StageManager.Animations
 				inPlaceholder = PlaceholderFactory.Create(inIcon);
 				var inFrom = incomingSource.ToCanvas(_overlay);
 				var inTo = incomingTarget.ToCanvas(_overlay);
-				SetupPlaceholder(inPlaceholder, storyboard, duration, easing, inFrom, inTo);
+				// Incoming = clicked scene travelling to the stage: tray skew → flat.
+				SetupPlaceholder(inPlaceholder, storyboard, duration, easing, inFrom, inTo,
+					CompositionThumbnail.TrayTiltDegrees, 0.0);
 				_overlay.Canvas.Children.Add(inPlaceholder);
 
 				Log.Info("ANIM", $"Incoming: ({inFrom.X:F0},{inFrom.Y:F0} {inFrom.Width:F0}x{inFrom.Height:F0}) → ({inTo.X:F0},{inTo.Y:F0} {inTo.Width:F0}x{inTo.Height:F0})");
@@ -81,7 +84,9 @@ namespace StageManager.Animations
 					outPlaceholder = PlaceholderFactory.Create(outIcon);
 					var outFrom = outgoingSource.ToCanvas(_overlay);
 					var outTo = outgoingTarget.ToCanvas(_overlay);
-					SetupPlaceholder(outPlaceholder, storyboard, duration, easing, outFrom, outTo);
+					// Outgoing = restored scene returning to the tray: flat → tray skew.
+					SetupPlaceholder(outPlaceholder, storyboard, duration, easing, outFrom, outTo,
+						0.0, CompositionThumbnail.TrayTiltDegrees);
 					_overlay.Canvas.Children.Add(outPlaceholder);
 
 					Log.Info("ANIM", $"Outgoing: ({outFrom.X:F0},{outFrom.Y:F0} {outFrom.Width:F0}x{outFrom.Height:F0}) → ({outTo.X:F0},{outTo.Y:F0} {outTo.Width:F0}x{outTo.Height:F0})");
@@ -123,7 +128,8 @@ namespace StageManager.Animations
 		}
 
 		private static void SetupPlaceholder(Border placeholder, Storyboard storyboard,
-			Duration duration, IEasingFunction easing, Rect from, Rect to)
+			Duration duration, IEasingFunction easing, Rect from, Rect to,
+			double fromAngle, double toAngle)
 		{
 			Canvas.SetLeft(placeholder, from.X);
 			Canvas.SetTop(placeholder, from.Y);
@@ -134,6 +140,17 @@ namespace StageManager.Animations
 			storyboard.Children.Add(Anim.Storyboard(from.Y, to.Y, duration, easing, placeholder, Canvas.TopProperty));
 			storyboard.Children.Add(Anim.Storyboard(from.Width, to.Width, duration, easing, placeholder, FrameworkElement.WidthProperty));
 			storyboard.Children.Add(Anim.Storyboard(from.Height, to.Height, duration, easing, placeholder, FrameworkElement.HeightProperty));
+
+			// Tilt: skewed in the tray, flat on the stage. Approximated as a
+			// horizontal scale (ScaleX = cos θ) about the placeholder centre —
+			// the orthographic projection of the tray's Y-axis rotation, since
+			// .NET 10 WPF no longer ships PlaneProjection.
+			var fromSx = Math.Cos(fromAngle * Math.PI / 180.0);
+			var toSx = Math.Cos(toAngle * Math.PI / 180.0);
+			var sx = new DoubleAnimation(fromSx, toSx, duration) { EasingFunction = easing };
+			Storyboard.SetTarget(sx, placeholder);
+			Storyboard.SetTargetProperty(sx, new PropertyPath("(UIElement.RenderTransform).(ScaleTransform.ScaleX)"));
+			storyboard.Children.Add(sx);
 		}
 
 		public void Dispose()

@@ -21,6 +21,13 @@ namespace StageManager.Animations
 				Background = new SolidColorBrush(Background),
 				CornerRadius = new CornerRadius(CornerRadiusValue),
 				ClipToBounds = false,
+				// Tilt slot. .NET 10 WPF dropped PlaneProjection, so the tray's
+				// 3D Y-rotation is approximated on proxies by a horizontal scale
+				// (ScaleX = cos θ — the orthographic projection of that rotation).
+				// Identity by default; the scene-switch animator + drag ghosts
+				// drive ScaleX about the element centre.
+				RenderTransformOrigin = new Point(0.5, 0.5),
+				RenderTransform = new ScaleTransform(1, 1),
 				Child = new Image
 				{
 					Source = icon,

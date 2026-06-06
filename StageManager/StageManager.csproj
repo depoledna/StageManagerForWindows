@@ -24,6 +24,12 @@
 		<Resource Include="StageManager.ico" />
 	</ItemGroup>
 
+	<!-- Disable WPF stylus/touch stack: PenThreadWorker throws IndexOutOfRangeException
+	     on its own thread (unhandleable AppDomain crash). App uses no pen input. -->
+	<ItemGroup>
+		<RuntimeHostConfigurationOption Include="Switch.System.Windows.Input.Stylus.DisableStylusAndTouchSupport" Value="true" Trim="true" />
+	</ItemGroup>
+
 	<ItemGroup>
 		<PackageReference Include="AsyncAwaitBestPractices" Version="9.0.0" />
 		<PackageReference Include="ControlzEx" Version="7.0.1" />

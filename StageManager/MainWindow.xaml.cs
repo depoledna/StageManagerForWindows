@@ -38,6 +38,9 @@ namespace StageManager
 		private TaskPoolGlobalHook? _hook;
 		private volatile bool _trayMenuOpen;
 		private WindowMode _mode;
+		// One-shot: snap the next sidebar mode change instead of sliding. Set when a
+		// window is dropped into the tray so the new tile appears in place, not via unstow.
+		private bool _suppressNextModeSlide;
 		private double _lastWidth;
 		private Timer? _overlapCheckTimer;
 		private long _mouseX;
@@ -310,7 +313,7 @@ namespace StageManager
 				() => _lastWidth,
 				w => WindowToLogicalRect(w),
 				w => AllScenes.OfType<SceneModel>().SelectMany(s => s.Windows).FirstOrDefault(wm => wm.Handle == w.Handle)?.Icon,
-				() => SyncVisibilityByUpdatedTimeStamp());
+				() => { _suppressNextModeSlide = true; SyncVisibilityByUpdatedTimeStamp(); });
 			SceneManager.WindowsManager.WindowUpdated += OnWindowUpdatedForDrag;
 
 			AddInitialScenes();
@@ -804,11 +807,11 @@ namespace StageManager
 			{
 				e.Handled = true; // Suppress SwitchSceneCommand
 
-				var pos = e.GetPosition(this);
 				var phase = _sidebarDragPhase;
 
-				if ((phase == SidebarDragPhase.PastBuffer || (phase == SidebarDragPhase.InBuffer && pos.X > _lastWidth))
-					&& _wpfDragScene != null)
+				// Activate only when dropped past the buffer (outside tray + buffer).
+				// InBuffer/InSidebar drops cancel — the scene stays stowed.
+				if (phase == SidebarDragPhase.PastBuffer && _wpfDragScene != null)
 				{
 					Log.Info("DRAG", $"WPF drop (phase={phase}), pulling from '{_wpfDragScene.Title}'");
 					var scene = _wpfDragScene.Scene;
@@ -1131,6 +1134,24 @@ namespace StageManager
 			var newLeft = Mode == StageManager.WindowMode.OffScreen ? (-1 * Width) : 0.0;
 			if (Left == newLeft)
 				return;
+
+			// Drop-into-tray: snap to final state, no unstow slide.
+			if (_suppressNextModeSlide)
+			{
+				_suppressNextModeSlide = false;
+				BeginAnimation(LeftProperty, null);
+				Left = newLeft;
+				UpdateLayout();
+				bool onScreen = Mode != StageManager.WindowMode.OffScreen;
+				_iconOverlay.Enabled = onScreen;
+				if (onScreen)
+				{
+					var visible = Scenes.Where(s => s.IsVisible).ToList();
+					_iconOverlay.UpdateIcons(visible, s => GetSceneThumbnailScreenBounds(s), GetWorkAreaBounds());
+					_iconOverlay.BringToFront();
+				}
+				return;
+			}
 
 			var isIncoming = newLeft > Left;
 			var easingMode = isIncoming ? EasingMode.EaseOut : EasingMode.EaseIn;

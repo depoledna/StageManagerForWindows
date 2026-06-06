@@ -15,6 +15,13 @@ namespace StageManager.Controls
 	/// </summary>
 	public partial class CompositionThumbnail : UserControl
 	{
+		/// <summary>
+		/// Resting 3D tilt of tray thumbnails, in degrees. Single source of
+		/// truth: bound by XAML (x:Static) and reused by the scene-switch
+		/// animator so the flying placeholder matches the tray skew.
+		/// </summary>
+		public const double TrayTiltDegrees = 31.0;
+
 		private CompositionHost? _compositionHost;
 		private D3DDeviceHolder? _devices;
 		private CaptureSession? _session;
@@ -34,7 +41,13 @@ namespace StageManager.Controls
 		// 10% per side covers worst-case lateral overflow at peak hover:
 		// scale 1.08 → 4% sprite overflow + 10px MirrorTranslateX pull
 		// = ~14px on a 180px-wide thumb. 10% headroom = 18px slack.
-		private const double HoverHeadroom = 0.10;
+		private const double HoverHeadroom = 0.24;
+
+		// Camera distance (px) for the 3D tilt perspective term: M34 = -1/d.
+		// Larger = subtler foreshortening. ~750 matches WPF PlaneProjection's
+		// FOV closely enough that the resting thumb and a drag-ghost don't pop
+		// at handoff. Tune against the ghost.
+		private const float PerspectiveDepthPx = 400f;
 
 		public CompositionThumbnail()
 		{
@@ -75,6 +88,11 @@ namespace StageManager.Controls
 				ct.ApplyCornerRadius();
 		}
 
+		/// <summary>
+		/// 3D Y-axis tilt of the thumbnail in degrees (Apple Stage Manager look).
+		/// Rotates about the card's vertical centerline with perspective
+		/// foreshortening; 0 = flat. Composes with hover scale + cursor pull.
+		/// </summary>
 		public static readonly DependencyProperty SkewAngleDegreesProperty = DependencyProperty.Register(
 			nameof(SkewAngleDegrees),
 			typeof(double),
@@ -333,10 +351,17 @@ namespace StageManager.Controls
 			var inner = Matrix4x4.CreateScale(s, s, 1f);
 			if (angleDegrees != 0.0)
 			{
+				// 3D Y-axis rotation with perspective (Apple Stage Manager tilt):
+				// rotate about the card's vertical centerline so the inner edge
+				// comes toward the viewer and the outer edge recedes. Rotation
+				// must precede perspective — rotation generates the z that the
+				// M34 term foreshortens. Center stays fixed (origin maps to origin
+				// under both), so the card tilts in place.
 				var rad = (float)(angleDegrees * Math.PI / 180.0);
-				var skew = Matrix4x4.Identity;
-				skew.M21 = (float)Math.Tan(rad);
-				inner = inner * skew;
+				var rot = Matrix4x4.CreateRotationY(rad);
+				var persp = Matrix4x4.Identity;
+				persp.M34 = -1f / PerspectiveDepthPx;
+				inner = inner * rot * persp;
 			}
 
 			// Center → transform → re-center, then bias re-center by translate.
