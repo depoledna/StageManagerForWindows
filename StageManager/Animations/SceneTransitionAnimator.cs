@@ -112,25 +112,40 @@ namespace StageManager.Animations
 			TimeSpan? start = null;
 			EventHandler? handler = null;
 
+			void Finish(bool ok)
+			{
+				CompositionTarget.Rendering -= handler;
+				incoming?.Release();
+				outgoing?.Release();
+				if (_overlay != null && _overlay.Canvas.Children.Count == 0) _overlay.Hide();
+				_isAnimating = false;
+				tcs.TrySetResult(ok);
+			}
+
 			handler = (s, e) =>
 			{
-				var now = ((RenderingEventArgs)e).RenderingTime;
-				start ??= now;
-				double u = Math.Clamp((now - start.Value).TotalMilliseconds / durationMs, 0.0, 1.0);
-				double k = easing.Ease(u);
-
-				incoming?.Update(LerpRect(inFrom, inTo, k), Lerp(CompositionThumbnail.TrayTiltDegrees, 0.0, k));
-				outgoing?.Update(LerpRect(outFrom, outTo, k), Lerp(0.0, CompositionThumbnail.TrayTiltDegrees, k));
-
-				if (u >= 1.0)
+				// A throw inside the rendering tick must still unsubscribe + release,
+				// otherwise the handler leaks and _isAnimating stays true forever.
+				try
 				{
-					CompositionTarget.Rendering -= handler;
-					incoming?.Release();
-					outgoing?.Release();
-					if (_overlay != null && _overlay.Canvas.Children.Count == 0) _overlay.Hide();
-					_isAnimating = false;
-					Log.Info("ANIM", "Flight completed");
-					tcs.TrySetResult(true);
+					var now = ((RenderingEventArgs)e).RenderingTime;
+					start ??= now;
+					double u = Math.Clamp((now - start.Value).TotalMilliseconds / durationMs, 0.0, 1.0);
+					double k = easing.Ease(u);
+
+					incoming?.Update(LerpRect(inFrom, inTo, k), Lerp(CompositionThumbnail.TrayTiltDegrees, 0.0, k));
+					outgoing?.Update(LerpRect(outFrom, outTo, k), Lerp(0.0, CompositionThumbnail.TrayTiltDegrees, k));
+
+					if (u >= 1.0)
+					{
+						Log.Info("ANIM", "Flight completed");
+						Finish(true);
+					}
+				}
+				catch (Exception ex)
+				{
+					Log.Info("ANIM", $"Flight tick failed, aborting: {ex.Message}");
+					Finish(false);
 				}
 			};
 
@@ -144,7 +159,7 @@ namespace StageManager.Animations
 			_overlay.PositionFrom(bounds);
 		}
 
-		private static double Lerp(double a, double b, double t) => a + (b - a) * t;
+		private static double Lerp(double a, double b, double t) => DragDropManager.Lerp(a, b, t);
 
 		private static Rect LerpRect(Rect a, Rect b, double t) =>
 			new Rect(Lerp(a.X, b.X, t), Lerp(a.Y, b.Y, t), Lerp(a.Width, b.Width, t), Lerp(a.Height, b.Height, t));

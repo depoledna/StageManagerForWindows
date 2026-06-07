@@ -795,6 +795,12 @@ namespace StageManager
 		/// </summary>
 		public void ParkWindow(IWindow window) => WindowStrategy.Hide(window);
 
+		/// <summary>
+		/// Restores a parked window to its saved on-stage rect (and full alpha). Counterpart
+		/// to <see cref="ParkWindow"/>; used to cancel a stage→tray drag.
+		/// </summary>
+		public void RestoreWindow(IWindow window) => WindowStrategy.Show(window);
+
 		public bool IsDesktopView => _current is null;
 
 		public IEnumerable<IWindow> GetCurrentWindows() => _current?.Windows ?? GetSceneableWindows();

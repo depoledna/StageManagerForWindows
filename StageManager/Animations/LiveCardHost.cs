@@ -22,9 +22,9 @@ namespace StageManager.Animations
 	/// </summary>
 	internal sealed class LiveCardHost : IFlyingCard
 	{
-		// Per-side HWND inflation so the perspective-skewed near edge isn't clipped
-		// by the child-window rectangle. Matches CompositionThumbnail.HoverHeadroom.
-		private const double Headroom = 0.24;
+		// Per-side HWND inflation so the perspective-skewed near edge isn't clipped.
+		// Single source of truth with the tray tile so the host rect matches at handoff.
+		private const double Headroom = CompositionThumbnail.HoverHeadroom;
 
 		private readonly TransitionOverlayWindow _overlay;
 		private readonly Point _dpi;

@@ -1,4 +1,5 @@
 using StageManager.Animations;
+using StageManager.Controls;
 using StageManager.Native.PInvoke;
 using StageManager.Native.Window;
 using System;
@@ -22,12 +23,14 @@ namespace StageManager.Animations
 		private static readonly Rect TargetThumbSize = new Rect(0, 0, 120, 80);
 
 		private readonly SceneManager _sceneManager;
-		private readonly DragGhostWindow _ghostWindow;
+		private readonly SidebarDragGhost _ghost;
 		private readonly Func<Point> _getDpiScale;
 		private readonly Func<double> _getSidebarWidth;
+		private readonly Func<Rect> _getOverlayBounds;
 		private readonly Func<IWindow, Rect> _getWindowLogicalRect;
 		private readonly Func<IWindow, ImageSource?> _getWindowIcon;
 		private readonly Action _syncVisibility;
+		private readonly double _cornerRadius;
 
 		private int _stateValue = (int)DragState.None;
 		private DragState State
@@ -47,20 +50,24 @@ namespace StageManager.Animations
 
 		public DragDropManager(
 			SceneManager sceneManager,
-			DragGhostWindow ghostWindow,
+			SidebarDragGhost ghost,
 			Func<Point> getDpiScale,
 			Func<double> getSidebarWidth,
+			Func<Rect> getOverlayBounds,
 			Func<IWindow, Rect> getWindowLogicalRect,
 			Func<IWindow, ImageSource?> getWindowIcon,
-			Action syncVisibility)
+			Action syncVisibility,
+			double cornerRadius)
 		{
 			_sceneManager = sceneManager;
-			_ghostWindow = ghostWindow;
+			_ghost = ghost;
 			_getDpiScale = getDpiScale;
 			_getSidebarWidth = getSidebarWidth;
+			_getOverlayBounds = getOverlayBounds;
 			_getWindowLogicalRect = getWindowLogicalRect;
 			_getWindowIcon = getWindowIcon;
 			_syncVisibility = syncVisibility;
+			_cornerRadius = cornerRadius;
 		}
 
 		public void OnWindowMoveStart(IWindow window)
@@ -99,10 +106,12 @@ namespace StageManager.Animations
 			}
 			Log.Info("DRAG", $"Entered buffer zone (windowRect={windowRect})");
 
+			// Park off-screen (NOT alpha→0): WGC captures DWM post-alpha, so a hidden-by-alpha
+			// window yields transparent frames. Off-screen + full alpha keeps the live card fed.
 			HideRealWindow(window);
 
 			var icon = _getWindowIcon(window);
-			_ghostWindow.Show(windowRect.X, windowRect.Y, windowRect.Width, windowRect.Height, icon);
+			_ghost.ShowOwned(_getOverlayBounds(), windowRect, window.Handle, icon, _getDpiScale(), _cornerRadius);
 		}
 
 		public async void OnWindowMoveEnd(IWindow window)
@@ -126,7 +135,7 @@ namespace StageManager.Animations
 					if (dropCursor.X < _sidebarWidthPhysical)
 					{
 						Log.Window("DRAG", "Dropped in sidebar, separating window", window);
-						_ghostWindow.Hide();
+						_ghost.Hide();
 						State = DragState.None;
 						_sceneManager.SeparateWindowToNewScene(window);
 
@@ -137,7 +146,7 @@ namespace StageManager.Animations
 					else
 					{
 						Log.Info("DRAG", "Dropped in buffer zone, cancelling");
-						_ghostWindow.Hide();
+						_ghost.Hide();
 						RestoreRealWindow(window);
 					}
 				}
@@ -208,6 +217,12 @@ namespace StageManager.Animations
 				return;
 			}
 
+			// The OS modal move-loop re-pins the real window to the cursor every frame,
+			// fighting the off-screen park. Re-assert it each tick so only the live ghost
+			// shows. Hide() re-applies the off-screen SetWindowPos (saved rect kept from
+			// the first park), and the window stays composited so WGC keeps feeding frames.
+			_sceneManager.ParkWindow(_trackedWindow);
+
 			// Interpolate ghost size: t=0 at buffer edge, t=1 at sidebar edge
 			var bufferWidth = _bufferRightPhysical - _sidebarWidthPhysical;
 			var t = Math.Clamp((_bufferRightPhysical - mouseX) / bufferWidth, 0.0, 1.0);
@@ -219,14 +234,17 @@ namespace StageManager.Animations
 			var ghostX = mouseX / dpi.X - ghostW / 2;
 			var ghostY = mouseY / dpi.Y - ghostH / 2;
 
-			_ghostWindow.Update(ghostX, ghostY, ghostW, ghostH);
+			// Flat on stage (t=0) → full tray tilt at the sidebar edge (t=1), matching the
+			// resting tray card so the handoff into the tray has no pop.
+			var skew = Lerp(0.0, CompositionThumbnail.TrayTiltDegrees, t);
+			_ghost.UpdatePositionAndSize(ghostX, ghostY, ghostW, ghostH, skew);
 		}
 
 		private void ExitBufferZone()
 		{
 			if (_trackedWindow is null) return;
 			Log.Info("DRAG", "Exited buffer zone (cursor moved right)");
-			_ghostWindow.Hide();
+			_ghost.Hide();
 			Win32.SetWindowStyleLongPtr(_trackedWindow.Handle, _originalStyle);
 			RestoreRealWindow(_trackedWindow);
 			State = DragState.TrackingWindowDrag;
@@ -235,14 +253,14 @@ namespace StageManager.Animations
 
 		private void HideRealWindow(IWindow window)
 		{
-			Win32Helper.SetAlpha(window.Handle, 0);
-			Log.Window("DRAG", "Hidden (alpha→0)", window);
+			_sceneManager.ParkWindow(window);
+			Log.Window("DRAG", "Parked off-screen (alpha intact for WGC)", window);
 		}
 
 		private void RestoreRealWindow(IWindow window)
 		{
-			Win32Helper.SetAlpha(window.Handle, 255);
-			Log.Window("DRAG", "Restored (alpha→255)", window);
+			_sceneManager.RestoreWindow(window);
+			Log.Window("DRAG", "Restored to saved on-stage rect", window);
 		}
 
 		private void Reset()
@@ -254,7 +272,7 @@ namespace StageManager.Animations
 				{
 					Win32.SetWindowStyleLongPtr(_trackedWindow.Handle, _originalStyle);
 					RestoreRealWindow(_trackedWindow);
-					_ghostWindow.Hide();
+					_ghost.Hide();
 				}
 				catch { }
 			}

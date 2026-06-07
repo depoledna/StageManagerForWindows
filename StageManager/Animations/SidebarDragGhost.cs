@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Windows;
+using System.Windows.Media;
 using StageManager.Controls;
 using StageManager.Model;
 
@@ -42,6 +43,33 @@ namespace StageManager.Animations
 			catch (Exception ex)
 			{
 				Log.Info("DRAG", $"ShowDragGhost failed: {ex.Message}");
+				Hide();
+			}
+		}
+
+		/// <summary>
+		/// Owned variant for the stage→tray drag: the dragged window has no tray tile to
+		/// borrow, so capture it into a fresh session. Starts flat (0° — it's on stage);
+		/// the caller skews it toward the tray angle across the buffer. Falls back to a
+		/// static icon card when capture is unavailable.
+		/// </summary>
+		public void ShowOwned(Rect overlayBounds, Rect ghostRect, IntPtr hwnd,
+			ImageSource? icon, Point dpi, double cornerRadius)
+		{
+			if (_animator.IsAnimating) return;
+			_isActive = true;
+
+			try
+			{
+				var overlay = _animator.GetOrCreateOverlay(overlayBounds);
+				_card = LiveCardHost.TryCreateOwned(overlay, hwnd, dpi, cornerRadius) as IFlyingCard
+					?? new BorderCard(overlay, icon);
+				_card.Update(ghostRect, 0.0);
+				overlay.Show();
+			}
+			catch (Exception ex)
+			{
+				Log.Info("DRAG", $"ShowOwned failed: {ex.Message}");
 				Hide();
 			}
 		}

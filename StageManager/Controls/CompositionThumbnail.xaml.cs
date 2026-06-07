@@ -42,16 +42,17 @@ namespace StageManager.Controls
 		// _rootContainer's TransformMatrix every time a bound DP ticks.
 		private bool _borrowed;
 
-		// Each side. Total HWND inflation = 1 + 2 * HoverHeadroom.
-		// 10% per side covers worst-case lateral overflow at peak hover:
-		// scale 1.08 → 4% sprite overflow + 10px MirrorTranslateX pull
-		// = ~14px on a 180px-wide thumb. 10% headroom = 18px slack.
-		private const double HoverHeadroom = 0.24;
+		// Each side. Total HWND inflation = 1 + 2 * HoverHeadroom. 24% per side
+		// covers worst-case lateral overflow at peak hover (scale 1.08 + pull)
+		// plus the 3D-tilt near-edge enlargement. Shared: LiveCardHost sizes the
+		// borrowed drag/fly card with the same headroom so the host rect matches
+		// the tile's and the skewed edge isn't clipped differently at handoff.
+		internal const double HoverHeadroom = 0.24;
 
 		// Camera distance (px) for the 3D tilt perspective term: M34 = -1/d.
-		// Larger = subtler foreshortening. ~750 matches WPF PlaneProjection's
-		// FOV closely enough that the resting thumb and a drag-ghost don't pop
-		// at handoff. Tune against the ghost.
+		// Larger = subtler foreshortening. Tuned by eye; the borrowed drag/fly
+		// card shares this recipe via ComposeTransform so resting thumb and
+		// moving card don't pop at handoff.
 		private const float PerspectiveDepthPx = 400f;
 
 		public CompositionThumbnail()

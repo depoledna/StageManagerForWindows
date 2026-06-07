@@ -72,7 +72,6 @@ namespace StageManager
 		private readonly DebugZoneOverlay _debugZoneOverlay;
 
 		private DragDropManager? _dragDropManager;
-		private readonly DragGhostWindow _dragGhostWindow = new DragGhostWindow();
 		private readonly IconOverlayManager _iconOverlay = new();
 		private readonly UpdateService _updateService = new();
 		private string? _filterProcessKey;
@@ -281,7 +280,6 @@ namespace StageManager
 
 			// Clean up animation overlay, drag ghost, and icon overlay
 			_sceneTransitionAnimator?.Dispose();
-			_dragGhostWindow?.Dispose();
 			_iconOverlay?.Dispose();
 			_updateService?.Dispose();
 
@@ -317,12 +315,14 @@ namespace StageManager
 			// Wire up drag-and-drop manager
 			_dragDropManager = new DragDropManager(
 				SceneManager,
-				_dragGhostWindow,
+				_sidebarDragGhost,
 				() => Dpi,
 				() => _lastWidth,
+				() => GetWorkAreaBounds(),
 				w => WindowToLogicalRect(w),
 				w => AllScenes.OfType<SceneModel>().SelectMany(s => s.Windows).FirstOrDefault(wm => wm.Handle == w.Handle)?.Icon,
-				() => { _suppressNextModeSlide = true; SyncVisibilityByUpdatedTimeStamp(); });
+				() => { _suppressNextModeSlide = true; SyncVisibilityByUpdatedTimeStamp(); },
+				SidebarThumbCornerRadius);
 			SceneManager.WindowsManager.WindowUpdated += OnWindowUpdatedForDrag;
 
 			AddInitialScenes();
