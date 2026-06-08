@@ -16,11 +16,11 @@ namespace StageManager.Controls
 	public partial class CompositionThumbnail : UserControl
 	{
 		/// <summary>
-		/// Resting 3D tilt of tray thumbnails, in degrees. Single source of
-		/// truth: bound by XAML (x:Static) and reused by the scene-switch
-		/// animator so the flying placeholder matches the tray skew.
+		/// Resting vertical-shear skew of tray thumbnails, in degrees. Single
+		/// source of truth: bound by XAML (x:Static) and reused by the scene-
+		/// switch animator so the flying placeholder matches the tray skew.
 		/// </summary>
-		public const double TrayTiltDegrees = 31.0;
+		public const double TrayTiltDegrees = 2.0;
 
 		private CompositionHost? _compositionHost;
 		private D3DDeviceHolder? _devices;
@@ -48,12 +48,6 @@ namespace StageManager.Controls
 		// borrowed drag/fly card with the same headroom so the host rect matches
 		// the tile's and the skewed edge isn't clipped differently at handoff.
 		internal const double HoverHeadroom = 0.24;
-
-		// Camera distance (px) for the 3D tilt perspective term: M34 = -1/d.
-		// Larger = subtler foreshortening. Tuned by eye; the borrowed drag/fly
-		// card shares this recipe via ComposeTransform so resting thumb and
-		// moving card don't pop at handoff.
-		private const float PerspectiveDepthPx = 400f;
 
 		public CompositionThumbnail()
 		{
@@ -95,9 +89,9 @@ namespace StageManager.Controls
 		}
 
 		/// <summary>
-		/// 3D Y-axis tilt of the thumbnail in degrees (Apple Stage Manager look).
-		/// Rotates about the card's vertical centerline with perspective
-		/// foreshortening; 0 = flat. Composes with hover scale + cursor pull.
+		/// Vertical-shear skew of the thumbnail in degrees (Apple Stage Manager
+		/// look): y' = y + tan(angle)*x, so sides stay vertical and top/bottom
+		/// tilt in parallel; 0 = flat. Composes with hover scale + cursor pull.
 		/// </summary>
 		public static readonly DependencyProperty SkewAngleDegreesProperty = DependencyProperty.Register(
 			nameof(SkewAngleDegrees),
@@ -361,17 +355,16 @@ namespace StageManager.Controls
 			var inner = Matrix4x4.CreateScale(s, s, 1f);
 			if (angleDegrees != 0.0)
 			{
-				// 3D Y-axis rotation with perspective (Apple Stage Manager tilt):
-				// rotate about the card's vertical centerline so the inner edge
-				// comes toward the viewer and the outer edge recedes. Rotation
-				// must precede perspective — rotation generates the z that the
-				// M34 term foreshortens. Center stays fixed (origin maps to origin
-				// under both), so the card tilts in place.
+				// 2D vertical shear (Apple Stage Manager tilt): y' = y - tan(t)*x.
+				// A vertical line keeps its x, so left/right edges stay vertical
+				// (90 deg to the screen bottom); horizontals tilt by the same
+				// slope, so top and bottom stay parallel (no convergence). Negative
+				// slope drops the right edge so cards "aim down". Identical on every
+				// tile, so none read as aiming up/down by row position.
 				var rad = (float)(angleDegrees * Math.PI / 180.0);
-				var rot = Matrix4x4.CreateRotationY(rad);
-				var persp = Matrix4x4.Identity;
-				persp.M34 = -1f / PerspectiveDepthPx;
-				inner = inner * rot * persp;
+				var shear = Matrix4x4.Identity;
+				shear.M12 = (float)Math.Tan(rad);
+				inner = inner * shear;
 			}
 
 			// Center → transform → re-center, then bias re-center by translate.
