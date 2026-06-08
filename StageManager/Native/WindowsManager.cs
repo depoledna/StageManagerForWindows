@@ -333,6 +333,38 @@ namespace StageManager.Native
 			return idChild == Win32.CHILDID_SELF && idObject == Win32.OBJID.OBJID_WINDOW && hwnd != IntPtr.Zero;
 		}
 
+		/// <summary>
+		/// Nudge (and if oversized, shrink) a window so its whole rect fits inside
+		/// the work area of the monitor it is nearest to. Used on first registration
+		/// of a runtime-created window so it can never appear partly/fully off-screen.
+		/// WorkingArea and SetWindowPos share the same physical-pixel space.
+		/// </summary>
+		private static void EnsureWindowOnScreen(WindowsWindow window)
+		{
+			var handle = window.Handle;
+			// Leave minimized/maximized windows to the OS; their rects aren't a
+			// normal restorable position.
+			if (Win32.IsIconic(handle) || Win32.IsZoomed(handle))
+				return;
+
+			Win32.Rect rect = new Win32.Rect();
+			if (!Win32.GetWindowRect(handle, ref rect))
+				return;
+
+			var wa = System.Windows.Forms.Screen.FromHandle(handle).WorkingArea;
+			int w = Math.Min(rect.Width, wa.Width);
+			int h = Math.Min(rect.Height, wa.Height);
+			int x = Math.Max(wa.Left, Math.Min(rect.Left, wa.Right - w));
+			int y = Math.Max(wa.Top, Math.Min(rect.Top, wa.Bottom - h));
+
+			if (x == rect.Left && y == rect.Top && w == rect.Width && h == rect.Height)
+				return;
+
+			Log.Window("ONSCREEN", $"Clamp ({rect.Left},{rect.Top},{rect.Width}x{rect.Height})→({x},{y},{w}x{h})", window);
+			Win32.SetWindowPos(handle, IntPtr.Zero, x, y, w, h,
+				Win32.SetWindowPosFlags.DoNotActivate | Win32.SetWindowPosFlags.IgnoreZOrder);
+		}
+
 		private void RegisterWindow(IntPtr handle, bool emitEvent = true)
 		{
 			if (!_active)
@@ -371,6 +403,13 @@ namespace StageManager.Native
 
 					if (emitEvent)
 					{
+						// A freshly-launched window keeps whatever rect the app
+						// restored — which can be fully off-screen (apps like Chrome
+						// persist their last position, and we park hidden windows
+						// off-screen, so the saved position is off-screen). Pull it
+						// back so all four corners sit inside the work area before
+						// the scene shows it.
+						EnsureWindowOnScreen(window);
 						HandleWindowAdd(window, true);
 					}
 				}

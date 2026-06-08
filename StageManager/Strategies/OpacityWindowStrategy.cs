@@ -60,11 +60,14 @@ namespace StageManager.Strategies
 
 		private static (int X, int Y) GetOffScreenPoint()
 		{
-			// Past the right edge of the virtual screen (all monitors combined).
-			// +100 keeps a margin in case a monitor is hot-plugged at the right edge.
-			var x = (int)(SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth) + 100;
-			var y = (int)(SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight) + 100;
-			return (x, y);
+			// Past the bottom-right of the virtual screen (all monitors combined).
+			// Must use PHYSICAL pixels: SetWindowPos takes pixels, but WPF's
+			// SystemParameters.VirtualScreen is in DIPs — under >100% scale that DIP
+			// value lands back INSIDE the panel (window shows at the bottom-right corner
+			// instead of parking). WinForms SystemInformation.VirtualScreen is in the same
+			// physical-pixel space as SetWindowPos. +100 keeps a margin off the real edge.
+			var vs = System.Windows.Forms.SystemInformation.VirtualScreen;
+			return (vs.Right + 100, vs.Bottom + 100);
 		}
 
 		private static bool ShouldSkipTransparencyForWindow(IntPtr hWnd)
