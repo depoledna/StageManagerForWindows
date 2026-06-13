@@ -41,13 +41,17 @@ namespace StageManager.Composition
 		private GraphicsCaptureSession? _session;
 		private CompositionDrawingSurface? _surface;
 		private ICompositionDrawingSurfaceInterop? _surfaceInterop;
-		// _rootContainer: HWND-sized (oversized vs. base). Transform/Opacity
-		// applied here so hover-scale grows the inner sprite outward but stays
-		// inside the HWND rectangle (which would otherwise clip the rounded
-		// corners of the inner sprite when scaled past base bounds).
+		// _rootContainer: HWND-sized. Holds ONLY a pure perspective matrix (the
+		// "camera") so it foreshortens the sprite's native Y-rotation into the
+		// resting trapezoid. Opacity rides here too.
 		private ContainerVisual? _rootContainer;
-		// _spriteVisual: base-sized, centered inside _rootContainer via Offset.
-		// Owns the surface brush and rounded clip.
+		// _contentVisual: HWND-sized child of the root. Carries the affine content
+		// transform (hover scale / per-row shear / cursor pull) — kept OFF the root
+		// so the root's matrix stays pure perspective (an affine+perspective matrix
+		// on one visual collapses to affine and never divides).
+		private ContainerVisual? _contentVisual;
+		// _spriteVisual: base-sized, centered inside _contentVisual via Offset.
+		// Owns the surface brush + rounded clip; carries the native Y-rotation.
 		private SpriteVisual? _spriteVisual;
 		private CompositionSurfaceBrush? _surfaceBrush;
 		private CompositionGeometricClip? _clip;
@@ -56,6 +60,11 @@ namespace StageManager.Composition
 		private SizeInt32 _lastSurfaceSize;
 		private volatile bool _disposed;
 		private volatile bool _paused;
+
+		// Cached so the pure perspective matrix on _rootContainer can be rebuilt
+		// when either the container size or the depth changes.
+		private Vector2 _hwndPixels;
+		private float _perspectiveDepthPx; // 0 = no perspective until SetPerspective
 
 		public Visual? RootVisual => _rootContainer;
 		public event EventHandler? TargetClosed;
@@ -111,11 +120,14 @@ namespace StageManager.Composition
 				_spriteVisual.Size = Vector2.Zero;
 				_spriteVisual.Brush = _surfaceBrush;
 
-				// Container is the externally-visible root. Hover/click scale +
-				// opacity ride on it; the inner sprite stays centered inside.
+				// Root is the externally-visible camera: pure perspective + opacity.
+				// The content visual below carries scale/shear/pull; sprite below that.
 				_rootContainer = _compositor.CreateContainerVisual();
 				_rootContainer.Size = Vector2.Zero;
-				_rootContainer.Children.InsertAtTop(_spriteVisual);
+				_contentVisual = _compositor.CreateContainerVisual();
+				_contentVisual.Size = Vector2.Zero;
+				_contentVisual.Children.InsertAtTop(_spriteVisual);
+				_rootContainer.Children.InsertAtTop(_contentVisual);
 
 				BuildPool();
 				Log.Info("CAPSESS", $"Started capture for 0x{_hwnd:X}");
@@ -131,27 +143,86 @@ namespace StageManager.Composition
 			lock (_frameLock)
 			{
 				if (_disposed) return;
+				_hwndPixels = hwndPixels;
 				if (_rootContainer is not null)
 					_rootContainer.Size = hwndPixels;
+				if (_contentVisual is not null)
+					_contentVisual.Size = hwndPixels;
 				if (_spriteVisual is not null)
 				{
 					_spriteVisual.Size = basePixels;
 					// Center the base-sized sprite inside the oversized container.
 					var off = (hwndPixels - basePixels) * 0.5f;
 					_spriteVisual.Offset = new Vector3(off.X, off.Y, 0f);
+					// Pivot for the native Y-rotation (perspective) — the sprite's own center.
+					_spriteVisual.CenterPoint = new Vector3(basePixels.X * 0.5f, basePixels.Y * 0.5f, 0f);
 				}
 				if (_clipGeometry is not null)
 					_clipGeometry.Size = basePixels;
+				RebuildPerspective();
 			}
 		}
 
+		// The affine content transform (scale/shear/cursor-pull) — set on the
+		// content visual, NOT the root, so the root keeps a pure perspective matrix.
 		public void SetTransformMatrix(System.Numerics.Matrix4x4 transform)
 		{
 			lock (_frameLock)
 			{
-				if (_disposed || _rootContainer is null) return;
-				_rootContainer.TransformMatrix = transform;
+				if (_disposed || _contentVisual is null) return;
+				_contentVisual.TransformMatrix = transform;
 			}
+		}
+
+		/// <summary>
+		/// Constant native 3D rotation of the inner sprite about its vertical axis.
+		/// Combined with the perspective divide in the container's TransformMatrix
+		/// this foreshortens the card into the resting trapezoid — perspective on
+		/// the parent container, rotation on the child sprite, per the documented
+		/// Composition perspective pattern (a perspective matrix only foreshortens
+		/// a CHILD visual's 3D rotation, never its own).
+		/// </summary>
+		public void SetSpriteRotationY(float degrees)
+		{
+			lock (_frameLock)
+			{
+				if (_disposed || _spriteVisual is null) return;
+				_spriteVisual.RotationAxis = new Vector3(0f, 1f, 0f);
+				_spriteVisual.RotationAngleInDegrees = degrees;
+			}
+		}
+
+		/// <summary>
+		/// Sets the perspective vanishing-distance (px) for the pure perspective
+		/// matrix on _rootContainer that foreshortens the sprite's Y-rotation into
+		/// the resting trapezoid. Smaller = stronger; 0 disables perspective.
+		/// </summary>
+		public void SetPerspective(float depthPx)
+		{
+			lock (_frameLock)
+			{
+				if (_disposed) return;
+				_perspectiveDepthPx = depthPx;
+				RebuildPerspective();
+			}
+		}
+
+		// Builds T(-c)*P*T(c) (P.M34 = -1/depth) on _rootContainer, centered on the
+		// current container size. Caller holds _frameLock.
+		private void RebuildPerspective()
+		{
+			if (_rootContainer is null) return;
+			if (_perspectiveDepthPx <= 0f || _hwndPixels.X <= 0f || _hwndPixels.Y <= 0f)
+			{
+				_rootContainer.TransformMatrix = Matrix4x4.Identity;
+				return;
+			}
+			float cx = _hwndPixels.X * 0.5f;
+			float cy = _hwndPixels.Y * 0.5f;
+			var p = Matrix4x4.Identity;
+			p.M34 = -1f / _perspectiveDepthPx;
+			_rootContainer.TransformMatrix =
+				Matrix4x4.CreateTranslation(-cx, -cy, 0f) * p * Matrix4x4.CreateTranslation(cx, cy, 0f);
 		}
 
 		public void SetOpacity(float opacity)
@@ -383,6 +454,7 @@ namespace StageManager.Composition
 					_surfaceBrush?.Dispose(); _surfaceBrush = null;
 					_clip?.Dispose(); _clip = null;
 					_clipGeometry?.Dispose(); _clipGeometry = null;
+					_contentVisual?.Dispose(); _contentVisual = null;
 					_rootContainer?.Dispose(); _rootContainer = null;
 					_surface?.Dispose(); _surface = null;
 					_surfaceInterop = null;

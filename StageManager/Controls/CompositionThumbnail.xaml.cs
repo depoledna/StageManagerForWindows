@@ -22,6 +22,18 @@ namespace StageManager.Controls
 		/// </summary>
 		public const double TrayTiltDegrees = 2.0;
 
+		/// <summary>
+		/// Constant 3D perspective for every resting tile (Apple Stage Manager look).
+		/// The inner sprite is given a NATIVE vertical-axis rotation of
+		/// PerspectiveRotateYDegrees (see CaptureSession.SetSpriteRotationY) so its
+		/// RIGHT edge recedes; the container's transform adds a perspective divide
+		/// (M34 = -1/PerspectiveDepthPx) that foreshortens that rotation into a
+		/// trapezoid. Smaller depth = stronger. Negate the angle if the LEFT edge
+		/// recedes instead of the right.
+		/// </summary>
+		public const double PerspectiveRotateYDegrees = 18.0;
+		public const double PerspectiveDepthPx = 220.0;
+
 		private CompositionHost? _compositionHost;
 		private D3DDeviceHolder? _devices;
 		private CaptureSession? _session;
@@ -42,12 +54,12 @@ namespace StageManager.Controls
 		// _rootContainer's TransformMatrix every time a bound DP ticks.
 		private bool _borrowed;
 
-		// Each side. Total HWND inflation = 1 + 2 * HoverHeadroom. 24% per side
+		// Each side. Total HWND inflation = 1 + 2 * HoverHeadroom. 30% per side
 		// covers worst-case lateral overflow at peak hover (scale 1.08 + pull)
 		// plus the 3D-tilt near-edge enlargement. Shared: LiveCardHost sizes the
 		// borrowed drag/fly card with the same headroom so the host rect matches
 		// the tile's and the skewed edge isn't clipped differently at handoff.
-		internal const double HoverHeadroom = 0.24;
+		internal const double HoverHeadroom = 0.30;
 
 		public CompositionThumbnail()
 		{
@@ -298,6 +310,10 @@ namespace StageManager.Controls
 			_session.SetVisualSize(
 				new Vector2((float)hwndW, (float)hwndH),
 				new Vector2((float)baseW, (float)baseH));
+			// Native vertical-axis rotation on the inner sprite — the depth the
+			// container's perspective matrix foreshortens into the resting trapezoid.
+			_session.SetSpriteRotationY((float)PerspectiveRotateYDegrees);
+			_session.SetPerspective((float)PerspectiveDepthPx);
 		}
 
 		private void ApplyCornerRadius()
@@ -346,26 +362,31 @@ namespace StageManager.Controls
 			var s = (float)scale;
 			var tx = (float)translateXPx;
 			var ty = (float)translateYPx;
-			if (angleDegrees == 0.0 && s == 1f && tx == 0f && ty == 0f)
-				return Matrix4x4.Identity;
 
+			// No identity early-out: the perspective below is applied to EVERY tile,
+			// so even a flat middle row (angle 0, scale 1, no pull) gets the trapezoid.
 			var cx = (float)(pixelWidth / 2.0);
 			var cy = (float)(pixelHeight / 2.0);
 
 			var inner = Matrix4x4.CreateScale(s, s, 1f);
 			if (angleDegrees != 0.0)
 			{
-				// 2D vertical shear (Apple Stage Manager tilt): y' = y - tan(t)*x.
-				// A vertical line keeps its x, so left/right edges stay vertical
-				// (90 deg to the screen bottom); horizontals tilt by the same
-				// slope, so top and bottom stay parallel (no convergence). Negative
-				// slope drops the right edge so cards "aim down". Identical on every
-				// tile, so none read as aiming up/down by row position.
+				// Per-row 2D vertical shear (the signed component): y' = y + tan(t)*x.
+				// Sides stay ~vertical; +angle drops the right edge (lean down),
+				// -angle raises it (lean up), 0 = flat. The angle is supplied per
+				// tile via the SkewAngleDegrees DP (set by row position in the tray).
 				var rad = (float)(angleDegrees * Math.PI / 180.0);
 				var shear = Matrix4x4.Identity;
 				shear.M12 = (float)Math.Tan(rad);
 				inner = inner * shear;
 			}
+
+			// Perspective and Y-rotation are NOT in this matrix — they live on
+			// separate visuals in CaptureSession (pure perspective on the root,
+			// native rotation on the sprite; see SetPerspective / SetSpriteRotationY),
+			// because Composition only foreshortens when perspective sits alone on an
+			// ancestor of the rotated visual. This matrix is affine only: scale +
+			// per-row shear + cursor pull.
 
 			// Center → transform → re-center, then bias re-center by translate.
 			var t1 = Matrix4x4.CreateTranslation(-cx, -cy, 0);

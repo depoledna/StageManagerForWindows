@@ -33,6 +33,9 @@ namespace StageManager
 	{
 		private const int TIMERINTERVAL_MILLISECONDS = 500;
 		private const int MAX_SCENES = 6;
+		// Degrees of vertical-shear skew per row away from the tray's vertical
+		// center: top rows lean down (positive), bottom rows up (negative), middle flat.
+		private const double ShearStepDegrees = 3.0;
 		private const string APP_NAME = "StageManager";
 		// Fraction of sidebar width at which a normal window's left edge triggers auto-stow.
 		// Lower = boundary sits further left, so wider windows keep the tray visible (more window estate).
@@ -919,6 +922,7 @@ namespace StageManager
 				for (int i = 0; i < scenes.Length; i++)
 					scenes[i].IsVisible = i < MAX_SCENES;
 				Log.Info("FILTER", $"SyncVisibility: filter=<none> total={scenes.Length} shown={Math.Min(scenes.Length, MAX_SCENES)} (cap={MAX_SCENES})");
+				AssignRowTilts();
 				return;
 			}
 
@@ -932,6 +936,21 @@ namespace StageManager
 				Log.Info("FILTER", $"SyncVisibility: scene='{scene.Title}' processes=[{string.Join(",", processNames)}] match={match} → IsVisible={match}");
 			}
 			Log.Info("FILTER", $"SyncVisibility: filter='{_filterProcessKey}' shown={shown} hidden={hidden} total={scenes.Length}");
+			AssignRowTilts();
+		}
+
+		// Assigns each visible scene a signed vertical-shear angle from its row
+		// position in the tray: top rows lean down (positive), bottom rows lean up
+		// (negative), middle ~flat. Iterates Scenes in collection order (the visual
+		// top-to-bottom order), NOT Updated order, and drives
+		// CompositionThumbnail.SkewAngleDegrees via SceneModel.TiltAngleDegrees.
+		private void AssignRowTilts()
+		{
+			var visible = Scenes.Where(s => s.IsVisible).ToList();
+			int n = visible.Count;
+			double mid = (n - 1) / 2.0;
+			for (int i = 0; i < n; i++)
+				visible[i].TiltAngleDegrees = ShearStepDegrees * (mid - i);
 		}
 
 		// Animated counterpart to SyncVisibilityByUpdatedTimeStamp for filter-toggle paths.
@@ -995,7 +1014,7 @@ namespace StageManager
 			_iconOverlay.UpdateIcons(visibleNow, s => GetSceneThumbnailScreenBounds(s), GetWorkAreaBounds());
 			Log.Info("FILTER_TIMING", $"first UpdateIcons at t={stopwatch.ElapsedMilliseconds}ms exits={pendingExits.Count} visibleNow={visibleNow.Count}");
 
-			if (pendingExits.Count == 0) return;
+			if (pendingExits.Count == 0) { AssignRowTilts(); return; }
 
 			// SET path: layout doesn't collapse until exits complete; reposition survivor icons
 			// against final layout afterward. Safety timeout covers SnapshotAndReplace swallowing Completed.
@@ -1006,6 +1025,7 @@ namespace StageManager
 			if (iconGen != _filterIconGen) return;
 			UpdateLayout();
 			var visibleAtFinal = Scenes.Where(s => s.IsVisible).ToList();
+			AssignRowTilts();
 			_iconOverlay.UpdateIcons(visibleAtFinal, s => GetSceneThumbnailScreenBounds(s), GetWorkAreaBounds());
 			Log.Info("FILTER_TIMING", $"second UpdateIcons at t={stopwatch.ElapsedMilliseconds}ms visibleFinal={visibleAtFinal.Count}");
 		}
@@ -1144,6 +1164,25 @@ namespace StageManager
 			return VisualTreeHelper.GetChild(container, 0) as FrameworkElement;
 		}
 
+		/// <summary>
+		/// Zero the cursor-pull TranslateTransform on every scene tile. Matches the
+		/// transform shape Scene_MouseMove writes (TransformGroup, Translate at [1]).
+		/// Used when the sidebar stows, since MouseLeave may not fire then.
+		/// </summary>
+		private void ResetAllScenePulls()
+		{
+			foreach (var grid in EnumerateVisualDescendants<Grid>(scenesControl))
+			{
+				if (grid.RenderTransform is not TransformGroup tg) continue;
+				if (tg.Children.Count < 2 || tg.Children[1] is not TranslateTransform tt) continue;
+				if (tt.X == 0 && tt.Y == 0) continue;
+				tt.BeginAnimation(TranslateTransform.XProperty, null);
+				tt.BeginAnimation(TranslateTransform.YProperty, null);
+				tt.X = 0;
+				tt.Y = 0;
+			}
+		}
+
 		private void RefreshIconOverlay(double xOffset = 0)
 		{
 			Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () =>
@@ -1188,6 +1227,14 @@ namespace StageManager
 			var newLeft = Mode == StageManager.WindowMode.OffScreen ? (-1 * Width) : 0.0;
 			if (Left == newLeft)
 				return;
+
+			// Hovering a tile writes a cursor-pull TranslateTransform that
+			// Scene_MouseLeave normally recoils to 0. When the sidebar stows, the
+			// cursor can leave without MouseLeave ever firing, so a pulled tile
+			// stays stuck off-center (−X if the cursor was on its left half) until
+			// the next scene switch rebuilds the transform. Zero all pulls on stow.
+			if (Mode == StageManager.WindowMode.OffScreen)
+				ResetAllScenePulls();
 
 			// Drop-into-tray: snap to final state, no unstow slide.
 			if (_suppressNextModeSlide)

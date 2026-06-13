@@ -196,6 +196,25 @@ namespace StageManager.Model
 			}
 		}
 
+		private double _tiltAngleDegrees;
+		/// <summary>
+		/// Per-row vertical-shear skew (degrees) for the live thumbnail, set from the
+		/// scene's vertical position in the tray (top leans down, bottom up, middle
+		/// flat) by MainWindow.AssignRowTilts. Bound to CompositionThumbnail.SkewAngleDegrees.
+		/// </summary>
+		public double TiltAngleDegrees
+		{
+			get => _tiltAngleDegrees;
+			set
+			{
+				if (_tiltAngleDegrees != value)
+				{
+					_tiltAngleDegrees = value;
+					RaisePropertyChanged();
+				}
+			}
+		}
+
 		public DateTime Updated { get; private set; }
 
 		private void RaisePropertyChanged([System.Runtime.CompilerServices.CallerMemberName] string memberName = "")
