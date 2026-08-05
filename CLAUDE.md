@@ -1,3 +1,16 @@
+## Overview
+
+A recreation of macOS Stage Manager for Windows, built on
+[awaescher/StageManager](https://github.com/awaescher/StageManager). Currently in beta; the goal is
+feature parity with macOS.
+
+Open windows are grouped by process into "scenes" listed on a sidebar. One scene is on stage at a time;
+the rest are parked off-screen. Clicking a scene switches to it, and windows can be dragged between
+scenes to reorganise the workspace. Sidebar tiles are live — each one is a real capture of the window,
+tilted and scaled to match the macOS card look.
+
+Single WPF executable, .NET 10, Windows 10 2004 or newer. No server, no database, no test project.
+
 ## Build & Run
 
 ```bash
