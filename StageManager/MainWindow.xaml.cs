@@ -62,6 +62,9 @@ namespace StageManager
 		private long _mouseX;
 		private CancellationTokenSource? _cancellationTokenSource;
 		private SceneModel? _removedCurrentScene;
+		// Guards SceneManager_CurrentSceneSelectionChanged against nested entry via
+		// the synchronous CollectionChanged handlers it triggers.
+		private bool _inSelectionChange;
 		private SceneModel? _mouseDownScene;
 		private bool _hideDesktopIcons;
 
@@ -459,6 +462,24 @@ namespace StageManager
 				return;
 			}
 
+			// Re-entrancy: every mutation below raises CollectionChanged synchronously,
+			// and its handlers can drive SceneManager back into another selection
+			// change. A nested pass would edit Scenes / _removedCurrentScene on a
+			// half-applied state — post it to run after this one instead.
+			if (_inSelectionChange)
+			{
+				Log.Info("SIDEBAR", "SelectionChanged re-entered, deferring to next dispatcher slot");
+				Dispatcher.BeginInvoke(new Action(() => SceneManager_CurrentSceneSelectionChanged(sender, args)));
+				return;
+			}
+
+			_inSelectionChange = true;
+			try { ApplyCurrentSceneSelection(args); }
+			finally { _inSelectionChange = false; }
+		}
+
+		private void ApplyCurrentSceneSelection(CurrentSceneSelectionChangedEventArgs args)
+		{
 			var currentModel = args.Current is null ? null : Scenes.FirstOrDefault(m => m.Id == args.Current.Id);
 			Log.Info("SIDEBAR", $"SelectionChanged: current='{args.Current?.Title ?? "(null)"}' prior='{args.Prior?.Title ?? "(null)"}' removedCurrent='{_removedCurrentScene?.Title ?? "(null)"}' scenes={Scenes.Count}");
 
@@ -467,15 +488,27 @@ namespace StageManager
 				var currentIndex = Scenes.IndexOf(currentModel);
 				Log.Info("SIDEBAR", $"Removing '{currentModel.Title}' at index {currentIndex}, inserting '{_removedCurrentScene?.Title ?? "(null)"}'");
 				currentModel.IsHiddenButReserved = false;
-				Scenes.RemoveAt(currentIndex);
+				if (currentIndex >= 0)
+					Scenes.RemoveAt(currentIndex);
 
-				if (_removedCurrentScene is object)
-					Scenes.Insert(currentIndex, _removedCurrentScene);
+				// RemoveAt raised CollectionChanged synchronously, and its handlers
+				// (container unload → TeardownSession → …) can mutate Scenes again,
+				// so currentIndex may now be past the end. Clamp instead of trusting
+				// the captured index — this threw ArgumentOutOfRangeException.
+				if (_removedCurrentScene is object && !Scenes.Contains(_removedCurrentScene))
+				{
+					var insertAt = Math.Clamp(currentIndex < 0 ? Scenes.Count : currentIndex, 0, Scenes.Count);
+					if (insertAt != currentIndex)
+						Log.Info("SIDEBAR", $"Insert index {currentIndex} stale after removal, clamped to {insertAt} (count={Scenes.Count})");
+					Scenes.Insert(insertAt, _removedCurrentScene);
+				}
 			}
 			else
 			{
 				Log.Info("SIDEBAR", $"Current not found in Scenes, appending '{_removedCurrentScene?.Title ?? "(null)"}'");
-				if (_removedCurrentScene is object)
+				// Contains guard: a re-entrant pass may already have put it back, and
+				// a duplicated item breaks ItemContainerGenerator.
+				if (_removedCurrentScene is object && !Scenes.Contains(_removedCurrentScene))
 					Scenes.Add(_removedCurrentScene);
 			}
 
