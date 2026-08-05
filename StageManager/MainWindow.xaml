@@ -162,7 +162,8 @@
                                     <controls:CompositionThumbnail
                                         PreviewHandle="{Binding Handle}"
                                         CornerRadius="8"
-                                        SkewAngleDegrees="{Binding DataContext.TiltAngleDegrees, RelativeSource={RelativeSource AncestorType=Grid, AncestorLevel=2}}"
+                                        TopEdgeDegrees="{Binding DataContext.TiltTopDegrees, RelativeSource={RelativeSource AncestorType=Grid, AncestorLevel=2}}"
+                                        BottomEdgeDegrees="{Binding DataContext.TiltBottomDegrees, RelativeSource={RelativeSource AncestorType=Grid, AncestorLevel=2}}"
                                         Width="{Binding PreviewWidth}"
                                         Height="{Binding PreviewHeight}"
                                         MirrorScale="{Binding RenderTransform.(TransformGroup.Children)[0].(ScaleTransform.ScaleX), RelativeSource={RelativeSource AncestorType=Grid, AncestorLevel=2}}"

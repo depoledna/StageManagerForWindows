@@ -32,10 +32,17 @@ namespace StageManager
 	public partial class MainWindow : Window, INotifyPropertyChanged
 	{
 		private const int TIMERINTERVAL_MILLISECONDS = 500;
-		private const int MAX_SCENES = 6;
-		// Degrees of vertical-shear skew per row away from the tray's vertical
-		// center: top rows lean down (positive), bottom rows up (negative), middle flat.
-		private const double ShearStepDegrees = 3.0;
+		private const int MAX_SCENES = 5;
+		// Resting look of the tray, measured off macOS 26.5.2 (CARD_QUAD_SPEC.md,
+		// 0.2 pt RMS over 16 corners): every horizontal card edge tilts by
+		// atan((yEdge - screenCenterY) / d), positive = right end rises, where
+		// d = 1379 pt on a 1169 pt screen. Position drives the shape — angles do
+		// NOT depend on row count or index. d scales with monitor height so the
+		// look is resolution-independent; the pivot is the FULL monitor centre
+		// (macOS pivots on screenHeight/2 including the menu bar), not the work
+		// area centre. CompositionThumbnail turns each angle pair into the shear
+		// + sprite rotation that reproduce exactly those two slopes.
+		private const double EdgePerspectiveDistanceRatio = 1379.0 / 1169.0;
 		private const string APP_NAME = "StageManager";
 		// Fraction of sidebar width at which a normal window's left edge triggers auto-stow.
 		// Lower = boundary sits further left, so wider windows keep the tray visible (more window estate).
@@ -939,18 +946,56 @@ namespace StageManager
 			AssignRowTilts();
 		}
 
-		// Assigns each visible scene a signed vertical-shear angle from its row
-		// position in the tray: top rows lean down (positive), bottom rows lean up
-		// (negative), middle ~flat. Iterates Scenes in collection order (the visual
-		// top-to-bottom order), NOT Updated order, and drives
-		// CompositionThumbnail.SkewAngleDegrees via SceneModel.TiltAngleDegrees.
+		// Assigns each visible scene the top/bottom edge angles the macOS position
+		// law dictates for its on-screen location (see EdgePerspectiveDistanceRatio).
+		// Angles need final layout positions, so the real work runs at Loaded
+		// priority — after the layout pass that the triggering data change caused.
+		// Tilts are a composition-only transform (no layout input), so measuring
+		// post-layout cannot feed back into another pass.
+		private bool _tiltAssignQueued;
 		private void AssignRowTilts()
 		{
-			var visible = Scenes.Where(s => s.IsVisible).ToList();
-			int n = visible.Count;
-			double mid = (n - 1) / 2.0;
-			for (int i = 0; i < n; i++)
-				visible[i].TiltAngleDegrees = ShearStepDegrees * (mid - i);
+			if (_tiltAssignQueued) return;
+			_tiltAssignQueued = true;
+			Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, new Action(() =>
+			{
+				_tiltAssignQueued = false;
+				AssignRowTiltsCore();
+			}));
+		}
+
+		private void AssignRowTiltsCore()
+		{
+			double screenH = SystemParameters.PrimaryScreenHeight;
+			double centerY = screenH / 2.0;
+			double d = screenH * EdgePerspectiveDistanceRatio;
+
+			foreach (var scene in Scenes.Where(s => s.IsVisible))
+			{
+				var container = TryGetSceneItemContainer(scene);
+				if (container is null || TryGetSceneInnerGrid(scene) is not FrameworkElement inner || inner.ActualHeight <= 0)
+					continue;
+				if (System.Windows.Media.VisualTreeHelper.GetParent(container) is not UIElement panel)
+					continue;
+
+				// Layout slot, not TransformToVisual: the FLIP slide animates the
+				// container's RenderTransform from the OLD position to 0, so a visual
+				// measurement mid-flight would bake in a stale offset that nothing
+				// recomputes once the animation lands. The slot is already final here.
+				var slot = System.Windows.Controls.Primitives.LayoutInformation.GetLayoutSlot(container);
+				Point panelOrigin;
+				try { panelOrigin = panel.TransformToVisual(this).Transform(new Point(0, 0)); }
+				catch (InvalidOperationException) { continue; }
+
+				double windowTop = double.IsNaN(Top) ? 0.0 : Top;
+				double yTop = windowTop + panelOrigin.Y + slot.Y;
+				double yBottom = yTop + inner.ActualHeight;
+
+				scene.TiltTopDegrees = Math.Atan((yTop - centerY) / d) * 180.0 / Math.PI;
+				scene.TiltBottomDegrees = Math.Atan((yBottom - centerY) / d) * 180.0 / Math.PI;
+				// Invariant format: tools/TiltProbe parses these lines.
+				Log.Info("TILT", FormattableString.Invariant($"scene='{scene.Title}' yTop={yTop:F1} yBottom={yBottom:F1} centerY={centerY:F1} d={d:F1} top={scene.TiltTopDegrees:F3} bottom={scene.TiltBottomDegrees:F3}"));
+			}
 		}
 
 		// Animated counterpart to SyncVisibilityByUpdatedTimeStamp for filter-toggle paths.

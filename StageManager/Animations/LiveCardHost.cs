@@ -131,7 +131,10 @@ namespace StageManager.Animations
 			{
 				// Detach the visual from the overlay BEFORE returning/disposing, so
 				// tearing down the overlay host can't take the tile's visual with it.
-				_host.Root = null;
+				// Detach can throw E_INVALIDARG if the visual died under us (device
+				// lost, session torn down off-thread) — never let that kill the app.
+				try { _host.Root = null; }
+				catch (Exception ex) { Log.Info("ANIM", $"LiveCardHost detach threw: {ex.Message}"); }
 				_borrowedTile?.ReturnRootVisual();
 				_overlay.Canvas.Children.Remove(_host);
 				try { _host.Dispose(); }

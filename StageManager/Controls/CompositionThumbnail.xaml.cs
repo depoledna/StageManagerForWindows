@@ -23,15 +23,12 @@ namespace StageManager.Controls
 		public const double TrayTiltDegrees = 2.0;
 
 		/// <summary>
-		/// Constant 3D perspective for every resting tile (Apple Stage Manager look).
-		/// The inner sprite is given a NATIVE vertical-axis rotation of
-		/// PerspectiveRotateYDegrees (see CaptureSession.SetSpriteRotationY) so its
-		/// RIGHT edge recedes; the container's transform adds a perspective divide
-		/// (M34 = -1/PerspectiveDepthPx) that foreshortens that rotation into a
-		/// trapezoid. Smaller depth = stronger. Negate the angle if the LEFT edge
-		/// recedes instead of the right.
+		/// Vanishing distance (physical px) of the perspective divide (M34 = -1/depth)
+		/// that CaptureSession puts on the tile's root container. It foreshortens the
+		/// inner sprite's native vertical-axis rotation into the resting trapezoid.
+		/// Smaller = stronger. The rotation itself is no longer a constant: it is
+		/// solved per tile from the requested edge angles, see ApplySpriteRotation.
 		/// </summary>
-		public const double PerspectiveRotateYDegrees = 18.0;
 		public const double PerspectiveDepthPx = 220.0;
 
 		private CompositionHost? _compositionHost;
@@ -47,12 +44,19 @@ namespace StageManager.Controls
 		private double _lastHwndPixelHeight;
 		private double _lastAppliedRadiusPx = double.NaN;
 		private Matrix4x4 _lastAppliedTransform = Matrix4x4.Identity;
+		private double _lastAppliedRotationDegrees = double.NaN;
 		private float _lastAppliedOpacity = 1f;
 		// While true the live capture visual is on loan to the sidebar drag
 		// ghost, which drives the shared session's size/transform directly.
 		// The tile must stop touching the session or the two fight over
 		// _rootContainer's TransformMatrix every time a bound DP ticks.
 		private bool _borrowed;
+
+		// Teardown requested while the visual was lent out (e.g. the tile
+		// unloaded because its scene left the tray mid-flight). Disposing the
+		// session then would yank live visuals out from under the flying card
+		// (WinRT E_INVALIDARG on every later touch), so defer until return.
+		private bool _teardownPending;
 
 		// Each side. Total HWND inflation = 1 + 2 * HoverHeadroom. 30% per side
 		// covers worst-case lateral overflow at peak hover (scale 1.08 + pull)
@@ -101,20 +105,39 @@ namespace StageManager.Controls
 		}
 
 		/// <summary>
-		/// Vertical-shear skew of the thumbnail in degrees (Apple Stage Manager
-		/// look): y' = y + tan(angle)*x, so sides stay vertical and top/bottom
-		/// tilt in parallel; 0 = flat. Composes with hover scale + cursor pull.
+		/// Angle of the tile's TOP edge in degrees, POSITIVE = its right end rises,
+		/// 0 = horizontal. Set per row from MainWindow's hardcoded tray table.
+		/// Together with <see cref="BottomEdgeDegrees"/> it pins both edges of the
+		/// resting trapezoid exactly; the left/right sides stay vertical.
 		/// </summary>
-		public static readonly DependencyProperty SkewAngleDegreesProperty = DependencyProperty.Register(
-			nameof(SkewAngleDegrees),
+		public static readonly DependencyProperty TopEdgeDegreesProperty = DependencyProperty.Register(
+			nameof(TopEdgeDegrees),
 			typeof(double),
 			typeof(CompositionThumbnail),
 			new PropertyMetadata(0.0, OnTransformInputChanged));
 
-		public double SkewAngleDegrees
+		public double TopEdgeDegrees
 		{
-			get => (double)GetValue(SkewAngleDegreesProperty);
-			set => SetValue(SkewAngleDegreesProperty, value);
+			get => (double)GetValue(TopEdgeDegreesProperty);
+			set => SetValue(TopEdgeDegreesProperty, value);
+		}
+
+		/// <summary>
+		/// Angle of the tile's BOTTOM edge in degrees, POSITIVE = its right end rises.
+		/// Bottom above top (bottom &gt; top) means the two edges converge to the
+		/// right — the receding-card look. Equal values = parallel edges, i.e. a pure
+		/// shear with no perspective at all.
+		/// </summary>
+		public static readonly DependencyProperty BottomEdgeDegreesProperty = DependencyProperty.Register(
+			nameof(BottomEdgeDegrees),
+			typeof(double),
+			typeof(CompositionThumbnail),
+			new PropertyMetadata(0.0, OnTransformInputChanged));
+
+		public double BottomEdgeDegrees
+		{
+			get => (double)GetValue(BottomEdgeDegreesProperty);
+			set => SetValue(BottomEdgeDegreesProperty, value);
 		}
 
 		// Mirrors the WPF ancestor's animated ScaleX/Y onto the SpriteVisual
@@ -307,12 +330,11 @@ namespace StageManager.Controls
 			// Size changed → cached radius / transform are tied to the old size.
 			_lastAppliedRadiusPx = double.NaN;
 			_lastAppliedTransform = new Matrix4x4(float.NaN, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+			// Base height feeds the rotation solve, so a size change invalidates it too.
+			_lastAppliedRotationDegrees = double.NaN;
 			_session.SetVisualSize(
 				new Vector2((float)hwndW, (float)hwndH),
 				new Vector2((float)baseW, (float)baseH));
-			// Native vertical-axis rotation on the inner sprite — the depth the
-			// container's perspective matrix foreshortens into the resting trapezoid.
-			_session.SetSpriteRotationY((float)PerspectiveRotateYDegrees);
 			_session.SetPerspective((float)PerspectiveDepthPx);
 		}
 
@@ -342,10 +364,42 @@ namespace StageManager.Controls
 			var dpi = VisualTreeHelper.GetDpi(this);
 			var translateXPx = MirrorTranslateX * dpi.DpiScaleX;
 			var translateYPx = MirrorTranslateY * dpi.DpiScaleY;
-			var matrix = ComposeTransform(SkewAngleDegrees, MirrorScale, translateXPx, translateYPx, _lastHwndPixelWidth, _lastHwndPixelHeight);
+
+			// Split the two requested edge angles into the two knobs that produce them.
+			// Screen slope (y grows DOWN) of an edge is -tan(deg), because the DPs use
+			// "positive = right end rises". Pushing the rect through sprite-rotation ->
+			// content-shear -> perspective-divide gives, for shear slope T (M12) and
+			// convergence Q = H*tan(theta)/(2*depth):
+			//     slope(top) = T + Q,   slope(bottom) = T - Q
+			// Width, hover scale and cursor pull all cancel out of both, so the split
+			// below is exact and stays exact while the tile is scaled/pulled.
+			var slopeTop = -Math.Tan(TopEdgeDegrees * Math.PI / 180.0);
+			var slopeBottom = -Math.Tan(BottomEdgeDegrees * Math.PI / 180.0);
+			var shearSlope = (slopeTop + slopeBottom) / 2.0;
+			var converge = (slopeTop - slopeBottom) / 2.0;
+
+			ApplySpriteRotation(converge);
+
+			var shearDegrees = Math.Atan(shearSlope) * 180.0 / Math.PI;
+			var matrix = ComposeTransform(shearDegrees, MirrorScale, translateXPx, translateYPx, _lastHwndPixelWidth, _lastHwndPixelHeight);
 			if (matrix == _lastAppliedTransform) return;
 			_lastAppliedTransform = matrix;
 			_session.SetTransformMatrix(matrix);
+		}
+
+		// Inverts Q = H*tan(theta)/(2*depth) for the sprite's native Y-rotation, so the
+		// converging pair of edges lands on the requested slopes at any tile size and
+		// DPI. A fixed rotation cannot: its convergence scales with the tile's pixel
+		// height. converge == 0 solves to 0 degrees, i.e. parallel edges, no divide.
+		private void ApplySpriteRotation(double converge)
+		{
+			if (_session is null) return;
+			var degrees = _lastBasePixelHeight > 0.0
+				? Math.Atan(2.0 * PerspectiveDepthPx * converge / _lastBasePixelHeight) * 180.0 / Math.PI
+				: 0.0;
+			if (degrees == _lastAppliedRotationDegrees) return;
+			_lastAppliedRotationDegrees = degrees;
+			_session.SetSpriteRotationY((float)degrees);
 		}
 
 		private void ApplyOpacity()
@@ -371,10 +425,11 @@ namespace StageManager.Controls
 			var inner = Matrix4x4.CreateScale(s, s, 1f);
 			if (angleDegrees != 0.0)
 			{
-				// Per-row 2D vertical shear (the signed component): y' = y + tan(t)*x.
-				// Sides stay ~vertical; +angle drops the right edge (lean down),
-				// -angle raises it (lean up), 0 = flat. The angle is supplied per
-				// tile via the SkewAngleDegrees DP (set by row position in the tray).
+				// 2D vertical shear, the component both edges share: y' = y + tan(t)*x.
+				// Sides stay vertical; +angle drops the right edge, -angle raises it
+				// (SCREEN convention, opposite of the Top/BottomEdgeDegrees DPs).
+				// Tiles pass the mean of their two edge slopes; the difference between
+				// the edges is carried by the sprite rotation, not by this matrix.
 				var rad = (float)(angleDegrees * Math.PI / 180.0);
 				var shear = Matrix4x4.Identity;
 				shear.M12 = (float)Math.Tan(rad);
@@ -427,6 +482,18 @@ namespace StageManager.Controls
 		internal void ReturnRootVisual()
 		{
 			_borrowed = false;
+			if (_teardownPending)
+			{
+				// Tile went away (or its window closed) while the visual was
+				// lent out — finish the deferred teardown now instead of
+				// reattaching. Also covers the unload-while-borrowed leak where
+				// the session would otherwise never be disposed.
+				TeardownSession();
+				// If the tile is back in the tray by now, restart clean.
+				if (IsLoaded && IsVisible && PreviewHandle != IntPtr.Zero)
+					StartCaptureIfReady();
+				return;
+			}
 			if (_compositionHost is null || _session is null) return;
 			_compositionHost.Root = _session.RootVisual;
 			_lastBasePixelWidth = 0;
@@ -435,6 +502,7 @@ namespace StageManager.Controls
 			_lastHwndPixelHeight = 0;
 			_lastAppliedRadiusPx = double.NaN;
 			_lastAppliedTransform = new Matrix4x4(float.NaN, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+			_lastAppliedRotationDegrees = double.NaN;
 			_lastAppliedOpacity = float.NaN;
 			RecomputePixelSize();
 			ApplyCornerRadius();
@@ -448,6 +516,13 @@ namespace StageManager.Controls
 		private void TeardownSession()
 		{
 			if (_session is null) return;
+			if (_borrowed)
+			{
+				_teardownPending = true;
+				Log.Info("COMPTHUMB", $"Teardown deferred (visual borrowed) for 0x{PreviewHandle:X}");
+				return;
+			}
+			_teardownPending = false;
 			_session.TargetClosed -= OnTargetClosed;
 
 			if (_compositionHost is not null)
@@ -462,6 +537,7 @@ namespace StageManager.Controls
 			_lastHwndPixelHeight = 0;
 			_lastAppliedRadiusPx = double.NaN;
 			_lastAppliedTransform = new Matrix4x4(float.NaN, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+			_lastAppliedRotationDegrees = double.NaN;
 			_lastAppliedOpacity = float.NaN;
 		}
 
