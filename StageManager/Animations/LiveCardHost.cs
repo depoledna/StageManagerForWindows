@@ -35,6 +35,14 @@ namespace StageManager.Animations
 		private CaptureSession? _ownedSession;
 		private CaptureSession? _session;
 
+		// The tray tile's resting edge angles, captured at borrow. The card interpolates
+		// these to (0,0) as it flies to the stage, re-solving the sprite rotation against
+		// its CURRENT height every frame — see SetEdgeShape. Zero for owned cards (no
+		// tile to inherit from), which stay flat.
+		private double _restTopEdgeDegrees;
+		private double _restBottomEdgeDegrees;
+		private double _lastAppliedRotationDegrees = double.NaN;
+
 		private LiveCardHost(TransitionOverlayWindow overlay, Point dpi, double cornerRadius)
 		{
 			_overlay = overlay;
@@ -52,6 +60,10 @@ namespace StageManager.Animations
 			{
 				_borrowedTile = tile,
 				_session = tile.Session,
+				// Inherit the tile's resting trapezoid so the card leaves the tray with
+				// exactly the tile's shape (no pop at handoff) and unfolds from there.
+				_restTopEdgeDegrees = tile.TopEdgeDegrees,
+				_restBottomEdgeDegrees = tile.BottomEdgeDegrees,
 			};
 			card.Mount(visual);
 			return card;
@@ -90,6 +102,11 @@ namespace StageManager.Animations
 			_host = new CompositionHost();
 			_overlay.Canvas.Children.Add(_host);
 			_host.Root = visual;
+
+			// The tile normally seeds this, but state it once here so the card's camera
+			// never depends on the tile having run a size pass. Constant for the whole
+			// flight — SetEdgeShape only varies the sprite rotation against it.
+			_session?.SetPerspective((float)CompositionThumbnail.PerspectiveDepthPx);
 		}
 
 		public void Update(Rect baseRect, double skewDegrees)
@@ -116,7 +133,60 @@ namespace StageManager.Animations
 
 			_session.SetVisualSize(new Vector2(hwndWpx, hwndHpx), new Vector2(baseWpx, baseHpx));
 			_session.SetCornerRadius((float)(_cornerRadius * _dpi.X), new Vector2(baseWpx, baseHpx));
-			_session.SetTransformMatrix(CompositionThumbnail.ComposeTransform(skewDegrees, 1.0, 0, 0, hwndWpx, hwndHpx));
+			SetEdgeShape(skewDegrees, baseHpx, hwndWpx, hwndHpx);
+		}
+
+		/// <summary>
+		/// Re-solves the card's trapezoid against its CURRENT height, every frame.
+		/// <para>
+		/// This is the whole point. The sprite's native Y-rotation and the root's fixed
+		/// <see cref="CompositionThumbnail.PerspectiveDepthPx"/> vanishing distance
+		/// produce convergence Q = H*tan(theta)/(2*depth) — Q grows with the sprite. The
+		/// card previously kept the rotation the tray tile solved for a ~200px-tall
+		/// sprite while growing to a ~1600px-tall one, so the perspective divide ran
+		/// away: at stage size one vertical edge scaled ~1.85x and the other ~0.69x, a
+		/// 2.7:1 trapezoid taller than the display. Solving from the live height keeps
+		/// the requested edge angles exact at every size, which is exactly what
+		/// CompositionThumbnail does for the resting tile.
+		/// </para>
+		/// </summary>
+		private void SetEdgeShape(double skewDegrees, float baseHpx, float hwndWpx, float hwndHpx)
+		{
+			if (_session is null) return;
+
+			// Owned cards have no tile to inherit a trapezoid from. Keep their original
+			// behaviour — skewDegrees straight through as a plain shear, no rotation, so
+			// the stage→tray card still tilts as it flies.
+			if (_restTopEdgeDegrees == 0.0 && _restBottomEdgeDegrees == 0.0)
+			{
+				_session.SetTransformMatrix(
+					CompositionThumbnail.ComposeTransform(skewDegrees, 1.0, 0, 0, hwndWpx, hwndHpx));
+				return;
+			}
+
+			// skewDegrees carries how much "tray-ness" is left: TrayTiltDegrees at the
+			// tray end of the flight, 0 at the stage end. Reuse it as the interpolation
+			// fraction for the inherited edge angles so the trapezoid flattens in
+			// lockstep with the flight and lands perfectly square on the stage.
+			double trayFraction = CompositionThumbnail.TrayTiltDegrees > 0.0
+				? Math.Clamp(skewDegrees / CompositionThumbnail.TrayTiltDegrees, 0.0, 1.0)
+				: 0.0;
+
+			var (shearDegrees, rotationDegrees) = CompositionThumbnail.SolveEdgeAngles(
+				_restTopEdgeDegrees * trayFraction,
+				_restBottomEdgeDegrees * trayFraction,
+				baseHpx);
+
+			// Dirty-check: one WinRT interop call per frame per card saved whenever the
+			// rotation is unchanged (notably the flat owned card, where it stays 0).
+			if (rotationDegrees != _lastAppliedRotationDegrees)
+			{
+				_lastAppliedRotationDegrees = rotationDegrees;
+				_session.SetSpriteRotationY((float)rotationDegrees);
+			}
+
+			_session.SetTransformMatrix(
+				CompositionThumbnail.ComposeTransform(shearDegrees, 1.0, 0, 0, hwndWpx, hwndHpx));
 		}
 
 		public void SetVisible(bool visible)

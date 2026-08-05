@@ -418,41 +418,60 @@ namespace StageManager.Controls
 			var translateXPx = MirrorTranslateX * dpi.DpiScaleX;
 			var translateYPx = MirrorTranslateY * dpi.DpiScaleY;
 
-			// Split the two requested edge angles into the two knobs that produce them.
-			// Screen slope (y grows DOWN) of an edge is -tan(deg), because the DPs use
-			// "positive = right end rises". Pushing the rect through sprite-rotation ->
-			// content-shear -> perspective-divide gives, for shear slope T (M12) and
-			// convergence Q = H*tan(theta)/(2*depth):
-			//     slope(top) = T + Q,   slope(bottom) = T - Q
-			// Width, hover scale and cursor pull all cancel out of both, so the split
-			// below is exact and stays exact while the tile is scaled/pulled.
-			var slopeTop = -Math.Tan(TopEdgeDegrees * Math.PI / 180.0);
-			var slopeBottom = -Math.Tan(BottomEdgeDegrees * Math.PI / 180.0);
-			var shearSlope = (slopeTop + slopeBottom) / 2.0;
-			var converge = (slopeTop - slopeBottom) / 2.0;
+			// Shear + sprite rotation are solved together from the edge-angle pair and
+			// the CURRENT base height — see SolveEdgeAngles for the derivation and for
+			// why the height has to feed back in on every size change.
+			var (shearDegrees, rotationDegrees) = SolveEdgeAngles(TopEdgeDegrees, BottomEdgeDegrees, _lastBasePixelHeight);
 
-			ApplySpriteRotation(converge);
+			if (rotationDegrees != _lastAppliedRotationDegrees)
+			{
+				_lastAppliedRotationDegrees = rotationDegrees;
+				_session.SetSpriteRotationY((float)rotationDegrees);
+			}
 
-			var shearDegrees = Math.Atan(shearSlope) * 180.0 / Math.PI;
 			var matrix = ComposeTransform(shearDegrees, MirrorScale, translateXPx, translateYPx, _lastHwndPixelWidth, _lastHwndPixelHeight);
 			if (matrix == _lastAppliedTransform) return;
 			_lastAppliedTransform = matrix;
 			_session.SetTransformMatrix(matrix);
 		}
 
-		// Inverts Q = H*tan(theta)/(2*depth) for the sprite's native Y-rotation, so the
-		// converging pair of edges lands on the requested slopes at any tile size and
-		// DPI. A fixed rotation cannot: its convergence scales with the tile's pixel
-		// height. converge == 0 solves to 0 degrees, i.e. parallel edges, no divide.
-		private void ApplySpriteRotation(double converge)
+		/// <summary>
+		/// Splits a pair of requested edge angles into the two knobs that reproduce
+		/// them: the affine vertical shear carried on the content visual, and the
+		/// sprite's native Y-rotation that the root's perspective divide foreshortens
+		/// into the converging pair.
+		/// <para>
+		/// Screen slope (y grows DOWN) of an edge is -tan(deg), because the DPs use
+		/// "positive = right end rises". Pushing the rect through sprite-rotation →
+		/// content-shear → perspective-divide gives, for shear slope T (M12) and
+		/// convergence Q = H*tan(theta)/(2*depth): slope(top) = T + Q,
+		/// slope(bottom) = T - Q. Width, hover scale and cursor pull all cancel out of
+		/// both, so the split is exact and stays exact while the tile is scaled/pulled.
+		/// </para>
+		/// <para>
+		/// <b>Must be re-solved whenever the sprite's pixel HEIGHT changes.</b> Inverting
+		/// Q for theta is what makes the look size- and DPI-independent; a rotation held
+		/// fixed while the sprite grows produces convergence proportional to H, and the
+		/// perspective divide (fixed <see cref="PerspectiveDepthPx"/> vanishing distance)
+		/// then blows up with half-width. A tray-sized solve reused on a stage-sized
+		/// flying card sends one vertical edge past 1.8x — taller than the screen.
+		/// </para>
+		/// </summary>
+		internal static (double ShearDegrees, double SpriteRotationDegrees) SolveEdgeAngles(
+			double topEdgeDegrees, double bottomEdgeDegrees, double baseHeightPx)
 		{
-			if (_session is null) return;
-			var degrees = _lastBasePixelHeight > 0.0
-				? Math.Atan(2.0 * PerspectiveDepthPx * converge / _lastBasePixelHeight) * 180.0 / Math.PI
+			var slopeTop = -Math.Tan(topEdgeDegrees * Math.PI / 180.0);
+			var slopeBottom = -Math.Tan(bottomEdgeDegrees * Math.PI / 180.0);
+			var shearSlope = (slopeTop + slopeBottom) / 2.0;
+			var converge = (slopeTop - slopeBottom) / 2.0;
+
+			var shearDegrees = Math.Atan(shearSlope) * 180.0 / Math.PI;
+			// converge == 0 solves to 0 degrees, i.e. parallel edges, no divide.
+			var rotationDegrees = baseHeightPx > 0.0
+				? Math.Atan(2.0 * PerspectiveDepthPx * converge / baseHeightPx) * 180.0 / Math.PI
 				: 0.0;
-			if (degrees == _lastAppliedRotationDegrees) return;
-			_lastAppliedRotationDegrees = degrees;
-			_session.SetSpriteRotationY((float)degrees);
+
+			return (shearDegrees, rotationDegrees);
 		}
 
 		private void ApplyOpacity()
