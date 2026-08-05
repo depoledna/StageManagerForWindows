@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Numerics;
 using System.Windows;
 using System.Windows.Controls;
@@ -65,6 +66,16 @@ namespace StageManager.Controls
 		// the tile's and the skewed edge isn't clipped differently at handoff.
 		internal const double HoverHeadroom = 0.30;
 
+		// Every live tile, so shutdown can dispose their sessions up-front instead of
+		// discovering them one WM_CLOSE visibility flip at a time. UI-thread only.
+		private static readonly List<CompositionThumbnail> s_live = new();
+
+		// Set by ShutdownAll before the window teardown cascade starts. Once true,
+		// no tile may touch WinRT again: the cascade runs inside an input-synchronous
+		// WM_CLOSE, where any outgoing cross-apartment call fails with
+		// RPC_E_CANTCALLOUT_ININPUTSYNCCALL (0x8001010D).
+		private static bool s_shuttingDown;
+
 		public CompositionThumbnail()
 		{
 			InitializeComponent();
@@ -72,6 +83,34 @@ namespace StageManager.Controls
 			Unloaded += OnUnloaded;
 			IsVisibleChanged += OnIsVisibleChanged;
 			SizeChanged += OnSizeChanged;
+			s_live.Add(this);
+		}
+
+		/// <summary>
+		/// Disposes every live capture session while ordinary COM rules still apply —
+		/// call from Window.OnClosing, BEFORE the WM_CLOSE visual-tree cascade. Leaving
+		/// it to the cascade throws 0x8001010D, kills the process mid-teardown, and
+		/// strands the surviving GraphicsCaptureSessions: DWM keeps capturing those
+		/// windows at full refresh rate with no consumer, dragging the whole desktop.
+		/// </summary>
+		internal static void ShutdownAll()
+		{
+			if (s_shuttingDown) return;
+			s_shuttingDown = true;
+
+			// Snapshot — TeardownSession can unregister as it goes.
+			var live = s_live.ToArray();
+			s_live.Clear();
+			Log.Info("COMPTHUMB", $"Shutdown: disposing {live.Length} capture session(s)");
+
+			foreach (var tile in live)
+			{
+				// A borrowed tile would normally defer teardown; there is no borrower
+				// left to return the visual, so force it.
+				tile._borrowed = false;
+				try { tile.TeardownSession(); }
+				catch (Exception ex) { Log.Info("COMPTHUMB", $"Shutdown teardown threw: {ex.Message}"); }
+			}
 		}
 
 		public static readonly DependencyProperty PreviewHandleProperty = DependencyProperty.Register(
@@ -222,6 +261,11 @@ namespace StageManager.Controls
 		// OnPropertyChanged. Subscribe to the dedicated event.
 		private void OnIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
 		{
+			// Closing the window makes WPF flip IsVisible on the whole visual tree
+			// from inside WM_CLOSE. Sessions are already gone (ShutdownAll ran in
+			// OnClosing) and any WinRT call from here would throw 0x8001010D.
+			if (s_shuttingDown) return;
+
 			// While lent to a fly animation the borrower owns the session's
 			// run state; ignore tile-visibility flips (the switch sets the tile
 			// invisible mid-flight and would otherwise pause the live frame).
@@ -253,6 +297,12 @@ namespace StageManager.Controls
 
 		private void OnUnloaded(object sender, RoutedEventArgs e)
 		{
+			s_live.Remove(this);
+
+			// ShutdownAll already disposed every session; the rest of this teardown
+			// is WinRT interop that is illegal inside the WM_CLOSE cascade.
+			if (s_shuttingDown) return;
+
 			TeardownSession();
 
 			if (_devices is not null && _deviceLostHandler is not null)
@@ -272,6 +322,9 @@ namespace StageManager.Controls
 
 		private void StartCaptureIfReady()
 		{
+			// Never resurrect a session once shutdown has begun — covers the
+			// TargetClosed / DeviceLost dispatcher callbacks that can land late.
+			if (s_shuttingDown) return;
 			if (_compositionHost is null || _devices is null) return;
 			if (_session is not null) return;
 			if (PreviewHandle == IntPtr.Zero) return;

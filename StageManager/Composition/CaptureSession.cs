@@ -27,6 +27,11 @@ namespace StageManager.Composition
 		private static readonly ConcurrentDictionary<IntPtr, SemaphoreSlim> _hwndLocks = new();
 		private static readonly Guid s_iidDxgiSurface = typeof(IDXGISurface).GUID;
 
+		// Upper bound on every semaphore wait. Nothing under this lock is long-running
+		// (framepool build / WinRT dispose), so exceeding it means the holder is wedged
+		// — proceeding or bailing beats hanging the thread forever.
+		private static readonly TimeSpan LockTimeout = TimeSpan.FromSeconds(2);
+
 		private readonly IntPtr _hwnd;
 		private readonly Compositor _compositor;
 		private readonly D3DDeviceHolder _devices;
@@ -79,7 +84,13 @@ namespace StageManager.Composition
 		public void Start()
 		{
 			var sem = _hwndLocks.GetOrAdd(_hwnd, _ => new SemaphoreSlim(1, 1));
-			sem.Wait();
+			// Bounded — Start runs on the UI thread; an unbounded wait here stalls
+			// the message pump if a capture-thread teardown is wedged.
+			if (!sem.Wait(LockTimeout))
+			{
+				Log.Info("CAPSESS", $"Start timed out waiting on lock for 0x{_hwnd:X}");
+				return;
+			}
 			try
 			{
 				if (_disposed) return;
@@ -260,40 +271,130 @@ namespace StageManager.Composition
 			}
 		}
 
+		/// <summary>
+		/// Stops frame delivery. Never blocks the caller: Pause is driven from the UI
+		/// thread by IsVisibleChanged (including the WM_CLOSE cascade), and the per-hwnd
+		/// lock may be held by a capture thread. A blocking wait here stalls the message
+		/// pump — the observed "StageManager.exe is delaying system shutdown after
+		/// 5016 ms". On contention the teardown is finished on the threadpool.
+		/// </summary>
 		public void Pause()
 		{
-			if (_paused) return;
+			if (_paused || _disposed) return;
 			var sem = _hwndLocks.GetOrAdd(_hwnd, _ => new SemaphoreSlim(1, 1));
-			sem.Wait();
+			if (!sem.Wait(0))
+			{
+				ThreadPool.QueueUserWorkItem(_ => PauseDeferred(sem));
+				return;
+			}
+			try { PauseLocked(); }
+			finally { sem.Release(); }
+		}
+
+		private void PauseDeferred(SemaphoreSlim sem)
+		{
+			// Threadpool callback: an escaping exception kills the process. The
+			// semaphore itself can be disposed out from under us by a concurrent
+			// Dispose() (which removes it from _hwndLocks), so guard the wait too.
+			bool held = false;
 			try
 			{
-				if (_disposed || _paused) return;
-				_paused = true;
-				if (_session is not null) { _session.Dispose(); _session = null; }
-				if (_framePool is not null)
+				held = sem.Wait(LockTimeout);
+				if (!held) { Log.Info("CAPSESS", $"Pause timed out waiting on lock for 0x{_hwnd:X}"); return; }
+				PauseLocked();
+			}
+			catch (Exception ex) { Log.Info("CAPSESS", $"Deferred pause failed for 0x{_hwnd:X}: {ex.Message}"); }
+			finally { if (held) { try { sem.Release(); } catch { } } }
+		}
+
+		// Caller holds the per-hwnd semaphore.
+		private void PauseLocked()
+		{
+			if (_disposed || _paused) return;
+			// Set first: OnFrameArrived short-circuits on _paused, so frame work stops
+			// even if the WinRT teardown below fails.
+			_paused = true;
+			ReleaseCaptureObjects("Pause");
+			Log.Info("CAPSESS", $"Paused capture for 0x{_hwnd:X}");
+		}
+
+		/// <summary>
+		/// Disposes the framepool + session. Every call is wrapped: WinRT teardown
+		/// throws RPC_E_CANTCALLOUT_ININPUTSYNCCALL (0x8001010D) when it lands while
+		/// the thread is dispatching an input-synchronous message (WM_CLOSE), and the
+		/// process must not die there — dying mid-teardown is exactly what leaks the
+		/// remaining sessions and leaves DWM capturing with no consumer.
+		/// </summary>
+		private void ReleaseCaptureObjects(string origin)
+		{
+			if (_session is not null)
+			{
+				try { _session.Dispose(); }
+				catch (Exception ex) { Log.Info("CAPSESS", $"{origin}: session dispose threw for 0x{_hwnd:X}: {ex.Message}"); }
+				_session = null;
+			}
+			if (_framePool is not null)
+			{
+				try
 				{
 					_framePool.FrameArrived -= OnFrameArrived;
 					_framePool.Dispose();
-					_framePool = null;
 				}
-				Log.Info("CAPSESS", $"Paused capture for 0x{_hwnd:X}");
+				catch (Exception ex) { Log.Info("CAPSESS", $"{origin}: framepool dispose threw for 0x{_hwnd:X}: {ex.Message}"); }
+				_framePool = null;
 			}
-			finally { sem.Release(); }
 		}
 
 		public void Resume()
 		{
-			if (!_paused) return;
+			if (!_paused || _disposed) return;
 			var sem = _hwndLocks.GetOrAdd(_hwnd, _ => new SemaphoreSlim(1, 1));
-			sem.Wait();
+			// Same no-block rule as Pause — Resume also runs on the UI thread.
+			if (!sem.Wait(0))
+			{
+				ThreadPool.QueueUserWorkItem(_ => ResumeDeferred(sem));
+				return;
+			}
+			try { ResumeLocked(); }
+			finally { sem.Release(); }
+		}
+
+		private void ResumeDeferred(SemaphoreSlim sem)
+		{
+			// See PauseDeferred — threadpool callback, must swallow everything.
+			bool held = false;
 			try
 			{
-				if (_disposed || _item is null) return;
-				BuildPool();
-				_paused = false;
-				Log.Info("CAPSESS", $"Resumed capture for 0x{_hwnd:X}");
+				held = sem.Wait(LockTimeout);
+				if (!held) { Log.Info("CAPSESS", $"Resume timed out waiting on lock for 0x{_hwnd:X}"); return; }
+				ResumeLocked();
 			}
-			finally { sem.Release(); }
+			catch (Exception ex) { Log.Info("CAPSESS", $"Deferred resume failed for 0x{_hwnd:X}: {ex.Message}"); }
+			finally { if (held) { try { sem.Release(); } catch { } } }
+		}
+
+		private static void DisposeQuietly(IDisposable? d)
+		{
+			if (d is null) return;
+			try { d.Dispose(); }
+			catch (Exception ex) { Log.Info("CAPSESS", $"Visual dispose threw: {ex.Message}"); }
+		}
+
+		// Caller holds the per-hwnd semaphore.
+		private void ResumeLocked()
+		{
+			if (_disposed || _item is null || !_paused) return;
+			// A deferred Pause may have raced us; make sure nothing is left running
+			// before building a second framepool on the same item.
+			ReleaseCaptureObjects("Resume");
+			try { BuildPool(); }
+			catch (Exception ex)
+			{
+				Log.Info("CAPSESS", $"Resume: BuildPool threw for 0x{_hwnd:X}: {ex.Message}");
+				return;
+			}
+			_paused = false;
+			Log.Info("CAPSESS", $"Resumed capture for 0x{_hwnd:X}");
 		}
 
 		private void BuildPool()
@@ -429,7 +530,11 @@ namespace StageManager.Composition
 			_disposed = true;
 
 			var sem = _hwndLocks.TryGetValue(_hwnd, out var s) ? s : null;
-			sem?.Wait();
+			// Bounded, and we proceed even on timeout: _disposed is already set and
+			// _frameLock below still fences an in-flight blit, so the GPU teardown is
+			// safe. Hanging here instead would deadlock shutdown.
+			var held = sem is null || sem.Wait(LockTimeout);
+			if (!held) Log.Info("CAPSESS", $"Dispose timed out waiting on lock for 0x{_hwnd:X}, proceeding");
 			try
 			{
 				// Take _frameLock so an in-flight OnFrameArrived completes before
@@ -438,38 +543,41 @@ namespace StageManager.Composition
 				// Dispose.
 				lock (_frameLock)
 				{
-					if (_item is not null) { _item.Closed -= OnItemClosed; }
-					if (_session is not null) { _session.Dispose(); _session = null; }
-					if (_framePool is not null)
+					if (_item is not null)
 					{
-						_framePool.FrameArrived -= OnFrameArrived;
-						_framePool.Dispose();
-						_framePool = null;
+						try { _item.Closed -= OnItemClosed; }
+						catch (Exception ex) { Log.Info("CAPSESS", $"Dispose: item unhook threw for 0x{_hwnd:X}: {ex.Message}"); }
 					}
+					// Wrapped — see ReleaseCaptureObjects: WinRT teardown throws
+					// 0x8001010D under an input-synchronous message (WM_CLOSE).
+					ReleaseCaptureObjects("Dispose");
 					_item = null;
 					// Dispose container LAST among visuals — children are
 					// disposed by the parent container automatically, but we
 					// null our refs first so any racing callback short-circuits.
-					_spriteVisual?.Dispose(); _spriteVisual = null;
-					_surfaceBrush?.Dispose(); _surfaceBrush = null;
-					_clip?.Dispose(); _clip = null;
-					_clipGeometry?.Dispose(); _clipGeometry = null;
-					_contentVisual?.Dispose(); _contentVisual = null;
-					_rootContainer?.Dispose(); _rootContainer = null;
-					_surface?.Dispose(); _surface = null;
+					// Each is individually wrapped: one visual already torn down
+					// under us must not abort the rest of the teardown.
+					DisposeQuietly(_spriteVisual); _spriteVisual = null;
+					DisposeQuietly(_surfaceBrush); _surfaceBrush = null;
+					DisposeQuietly(_clip); _clip = null;
+					DisposeQuietly(_clipGeometry); _clipGeometry = null;
+					DisposeQuietly(_contentVisual); _contentVisual = null;
+					DisposeQuietly(_rootContainer); _rootContainer = null;
+					DisposeQuietly(_surface); _surface = null;
 					_surfaceInterop = null;
 				}
 				Log.Info("CAPSESS", $"Disposed capture for 0x{_hwnd:X}");
 			}
 			finally
 			{
-				sem?.Release();
+				if (held) sem?.Release();
 				// Drop the per-hwnd semaphore so the static dictionary doesn't
-				// grow unbounded across short-lived windows.
-				if (sem is not null && _hwndLocks.TryRemove(_hwnd, out var removed))
-				{
-					removed.Dispose();
-				}
+				// grow unbounded across short-lived windows. NOT disposed: a
+				// deferred Pause/Resume may still be waiting on it, and
+				// SemaphoreSlim.Dispose would hand them an ObjectDisposedException
+				// on a threadpool thread. Nothing here uses AvailableWaitHandle,
+				// so there is no unmanaged handle to reclaim.
+				if (sem is not null) _hwndLocks.TryRemove(_hwnd, out _);
 			}
 		}
 	}

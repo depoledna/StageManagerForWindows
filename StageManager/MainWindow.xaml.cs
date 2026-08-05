@@ -267,6 +267,32 @@ namespace StageManager
 			StartHook();
 		}
 
+		/// <summary>
+		/// Everything that talks to WinRT must be torn down HERE, not in OnClosed.
+		/// OnClosing runs before WM_CLOSE destroys the window; OnClosed and the
+		/// IsVisible cascade it triggers run *inside* the input-synchronous WM_CLOSE
+		/// dispatch, where COM refuses outgoing cross-apartment calls with
+		/// RPC_E_CANTCALLOUT_ININPUTSYNCCALL (0x8001010D). That throw used to kill the
+		/// process mid-teardown, stranding every still-running GraphicsCaptureSession
+		/// so DWM kept capturing those windows with nothing consuming the frames.
+		/// </summary>
+		protected override void OnClosing(CancelEventArgs e)
+		{
+			base.OnClosing(e);
+			if (e.Cancel) return;
+
+			// Order matters: overlay/ghost first (they may hold a tile's borrowed
+			// visual), then the tiles' own sessions.
+			try { _sceneTransitionAnimator?.Dispose(); }
+			catch (Exception ex) { Log.Info("SHUTDOWN", $"Animator dispose threw: {ex.Message}"); }
+
+			try { _sidebarDragGhost?.Hide(); }
+			catch (Exception ex) { Log.Info("SHUTDOWN", $"Drag ghost hide threw: {ex.Message}"); }
+
+			try { CompositionThumbnail.ShutdownAll(); }
+			catch (Exception ex) { Log.Info("SHUTDOWN", $"Capture shutdown threw: {ex.Message}"); }
+		}
+
 		protected override void OnClosed(EventArgs e)
 		{
 			// Cancel all background operations
