@@ -77,37 +77,61 @@ namespace StageManager.Model
 
 		#region Thumbnail scaling
 		/// <summary>
-		/// Recalculates <see cref="WindowModel.PreviewWidth"/> and <see cref="WindowModel.PreviewHeight"/> for all
-		/// windows in this scene so that previews keep their relative size ratio. The largest window’s preview
-		/// will have a width of 120 px (baseline). The same scale factor is applied uniformly to height so that
-		/// aspect ratios are preserved.
+		/// macOS card sizing law (STAGE_MANAGER_SPEC §4, CARD_QUAD_SPEC §3): every
+		/// card is its source window under ONE uniform scale,
+		/// s = max(0.135693, 96 / sourceHeightDip) — no per-scene normalization and
+		/// no fitting into a box. The 96 dip floor (preferredMinimumItemHeight)
+		/// scales small/short windows UP so no card ever ends thinner than 96 dip;
+		/// aspect is always preserved.
 		/// </summary>
+		private const double BaseCardScale = 0.135693;
+		private const double MinCardHeightDip = 96.0;
+		// Same perspective distance the tilt law uses (CARD_QUAD_SPEC: d = 1379
+		// on a 1169 pt screen, scaled with monitor height).
+		private const double EdgePerspectiveDistanceRatio = 1379.0 / 1169.0;
+
 		public void UpdatePreviewSizes()
 		{
 			if (Windows is null || !Windows.Any())
 				return;
 
-			// Determine sizes, considering minimized windows (use normal bounds via GetWindowPlacement)
-			var sizes = Windows.Select(w => GetWindowSize(w.Window)).ToArray();
+			double dipScale = GetPixelsPerDip();
 
-			var maxWidth = sizes.Max(s => s.width);
-			if (maxWidth <= 0)
-				maxWidth = 1;
-
-			var scale = 180.0 / maxWidth; // baseline width of 180 px
-
-			for (int i = 0; i < Windows.Count; i++)
+			foreach (var window in Windows)
 			{
-				var (origWidth, origHeight) = sizes[i];
-				var newWidth = Math.Max(50, origWidth * scale);
-				var newHeight = Math.Max(50, origHeight * scale);
+				// Minimized windows report their restored bounds via GetWindowPlacement.
+				var (pxW, pxH) = GetWindowSize(window.Window);
+				if (pxW <= 0 || pxH <= 0)
+					continue;
 
-				var window = Windows[i];
-				window.PreviewWidth = newWidth;
-				window.PreviewHeight = newHeight;
+				double wDip = pxW / dipScale;
+				double hDip = pxH / dipScale;
+				double s = Math.Max(BaseCardScale, MinCardHeightDip / hDip);
+				double cardW = wDip * s;
+				double cardH = hDip * s;
 
-				System.Diagnostics.Debug.WriteLine($"[ThumbnailScale] Scene '{Title}' – Window '{window.Title}' original={origWidth}x{origHeight} => preview={newWidth:F0}x{newHeight:F0} (scale={scale:F3})");
+				// macOS anchors the card's perspective at its LEFT edge
+				// (y' = Y − u(Y − pivot)/d), so the mid-column height is
+				// H·(1 − W/(2d)) while the width stays W. Our renderer converges
+				// symmetrically AND aspect-fits the capture, so the two dimensions
+				// can't be steered independently: shrinking both by (1 − W/(2d))
+				// reproduces the Mac mid-column and left-edge heights exactly and
+				// leaves only the width up to ~7% narrow on the widest cards
+				// (which macOS clips at the strip edge anyway).
+				double dDip = System.Windows.SystemParameters.PrimaryScreenHeight * EdgePerspectiveDistanceRatio;
+				double squeeze = 1.0 - cardW / (2.0 * dDip);
+				window.PreviewWidth = cardW * squeeze;
+				window.PreviewHeight = cardH * squeeze;
+
+				System.Diagnostics.Debug.WriteLine($"[ThumbnailScale] Scene '{Title}' – Window '{window.Title}' source={pxW}x{pxH}px => card={window.PreviewWidth:F1}x{window.PreviewHeight:F1}dip (s={s:F4})");
 			}
+		}
+
+		private static double GetPixelsPerDip()
+		{
+			double pxH = System.Windows.Forms.Screen.PrimaryScreen?.Bounds.Height ?? 0;
+			double dipH = System.Windows.SystemParameters.PrimaryScreenHeight;
+			return pxH > 0 && dipH > 0 ? pxH / dipH : 1.0;
 		}
 
 		private static (int width, int height) GetWindowSize(StageManager.Native.Window.IWindow window)
@@ -196,20 +220,38 @@ namespace StageManager.Model
 			}
 		}
 
-		private double _tiltAngleDegrees;
+		private double _tiltTopDegrees;
 		/// <summary>
-		/// Per-row vertical-shear skew (degrees) for the live thumbnail, set from the
-		/// scene's vertical position in the tray (top leans down, bottom up, middle
-		/// flat) by MainWindow.AssignRowTilts. Bound to CompositionThumbnail.SkewAngleDegrees.
+		/// Angle (degrees, positive = right end rises) of the live thumbnail's TOP
+		/// edge, computed from the tile's on-screen position by
+		/// MainWindow.AssignRowTilts. Bound to CompositionThumbnail.TopEdgeDegrees.
 		/// </summary>
-		public double TiltAngleDegrees
+		public double TiltTopDegrees
 		{
-			get => _tiltAngleDegrees;
+			get => _tiltTopDegrees;
 			set
 			{
-				if (_tiltAngleDegrees != value)
+				if (_tiltTopDegrees != value)
 				{
-					_tiltAngleDegrees = value;
+					_tiltTopDegrees = value;
+					RaisePropertyChanged();
+				}
+			}
+		}
+
+		private double _tiltBottomDegrees;
+		/// <summary>
+		/// Angle (degrees, positive = right end rises) of the live thumbnail's BOTTOM
+		/// edge. Bound to CompositionThumbnail.BottomEdgeDegrees.
+		/// </summary>
+		public double TiltBottomDegrees
+		{
+			get => _tiltBottomDegrees;
+			set
+			{
+				if (_tiltBottomDegrees != value)
+				{
+					_tiltBottomDegrees = value;
 					RaisePropertyChanged();
 				}
 			}
