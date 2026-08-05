@@ -159,9 +159,19 @@
                             </ItemsControl.ItemsPanel>
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
+                                    <!-- HorizontalAlignment=Left is load-bearing: the panel is a
+                                         Grid and these tiles carry an explicit Width, so the WPF
+                                         default (Stretch) CENTRES each one in the row. Scenes whose
+                                         windows differ in width then get different left edges, and
+                                         within a scene the first window no longer lines up with the
+                                         other apps. Left pins every tile's left edge to the row
+                                         origin; the deliberate 10px-per-index cascade below (see
+                                         IndexToOffsetMarginConverter) then offsets from there, so
+                                         index 0 sits flush left. -->
                                     <controls:CompositionThumbnail
                                         PreviewHandle="{Binding Handle}"
                                         CornerRadius="8"
+                                        HorizontalAlignment="Left"
                                         TopEdgeDegrees="{Binding DataContext.TiltTopDegrees, RelativeSource={RelativeSource AncestorType=Grid, AncestorLevel=2}}"
                                         BottomEdgeDegrees="{Binding DataContext.TiltBottomDegrees, RelativeSource={RelativeSource AncestorType=Grid, AncestorLevel=2}}"
                                         Width="{Binding PreviewWidth}"
