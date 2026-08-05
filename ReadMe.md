@@ -4,7 +4,7 @@ A faithful recreation of macOS [Stage Manager](https://support.apple.com/en-us/H
 
 ![Stage Manager](media/current_state.gif)
 
-Groups windows by process into "scenes" shown on a sidebar. Switch scenes to focus on one group at a time while others are hidden. Drag windows between scenes to reorganize your workspace.
+Groups windows by process into "scenes" shown on a sidebar. Switch scenes to focus on one group at a time while others are hidden. Drag windows between scenes to reorganize your workspace. Sidebar previews are live and show each window's current contents.
 
 ## Usage
 
@@ -17,7 +17,8 @@ dotnet run --project StageManager
 ```
 
 ### Requirements
- - Windows 10 version 1607 or newer
+ - Windows 10 version 2004 (build 19041) or newer
+ - A GPU with Direct3D 11 support
  - [.NET 10 SDK](https://dotnet.microsoft.com/en-us/download)
 
 ## Roadmap
@@ -25,10 +26,10 @@ dotnet run --project StageManager
 The goal is a 1:1 match with macOS Stage Manager. Key remaining work:
 
 - **Behaviour alignment** — match macOS scene switching logic, window grouping rules, and edge cases
-- **Complete animations** — smooth scene transitions, sidebar fly-in/fly-out, window shuffle effects
+- **Complete animations** — window shuffle effects, and remaining transition polish
 - **Multi-monitor support** — independent stage managers per display
-- **Visual polish** — 3D perspective thumbnails, proper sizing relative to desktop, adaptive sidebar positioning
-- **Drag & drop refinement** — visual feedback, ghost previews, snap-to-scene indicators
+- **Visual polish** — adaptive sidebar positioning
+- **Drag & drop refinement** — snap-to-scene indicators
 - **Smarter window detection** — filter out popups and transient windows (e.g. Teams call toasts) that shouldn't create new scenes
 
 ## Acknowledgements

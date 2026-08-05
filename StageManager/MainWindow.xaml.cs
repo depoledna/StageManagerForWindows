@@ -1052,7 +1052,7 @@ namespace StageManager
 
 				scene.TiltTopDegrees = Math.Atan((yTop - centerY) / d) * 180.0 / Math.PI;
 				scene.TiltBottomDegrees = Math.Atan((yBottom - centerY) / d) * 180.0 / Math.PI;
-				// Invariant format: tools/TiltProbe parses these lines.
+				// Invariant format - parsed by the geometry measurement pass.
 				Log.Info("TILT", FormattableString.Invariant($"scene='{scene.Title}' yTop={yTop:F1} yBottom={yBottom:F1} centerY={centerY:F1} d={d:F1} top={scene.TiltTopDegrees:F3} bottom={scene.TiltBottomDegrees:F3}"));
 			}
 		}
