@@ -33,8 +33,8 @@ namespace StageManager
 	{
 		private const int TIMERINTERVAL_MILLISECONDS = 500;
 		private const int MAX_SCENES = 5;
-		// Resting look of the tray, measured off macOS 26.5.2 (CARD_QUAD_SPEC.md,
-		// 0.2 pt RMS over 16 corners): every horizontal card edge tilts by
+		// Resting look of the tray, measured off macOS 26.5.2 to within
+		// 0.2 pt RMS over 16 corners: every horizontal card edge tilts by
 		// atan((yEdge - screenCenterY) / d), positive = right end rises, where
 		// d = 1379 pt on a 1169 pt screen. Position drives the shape — angles do
 		// NOT depend on row count or index. d scales with monitor height so the

@@ -77,7 +77,7 @@ namespace StageManager.Model
 
 		#region Thumbnail scaling
 		/// <summary>
-		/// macOS card sizing law (STAGE_MANAGER_SPEC §4, CARD_QUAD_SPEC §3): every
+		/// macOS card sizing law, measured off macOS 26.5.2: every
 		/// card is its source window under ONE uniform scale,
 		/// s = max(0.135693, 96 / sourceHeightDip) — no per-scene normalization and
 		/// no fitting into a box. The 96 dip floor (preferredMinimumItemHeight)
@@ -86,8 +86,8 @@ namespace StageManager.Model
 		/// </summary>
 		private const double BaseCardScale = 0.135693;
 		private const double MinCardHeightDip = 96.0;
-		// Same perspective distance the tilt law uses (CARD_QUAD_SPEC: d = 1379
-		// on a 1169 pt screen, scaled with monitor height).
+		// Same perspective distance the tilt law uses: d = 1379 on a 1169 pt
+		// screen, scaled with monitor height.
 		private const double EdgePerspectiveDistanceRatio = 1379.0 / 1169.0;
 
 		public void UpdatePreviewSizes()
