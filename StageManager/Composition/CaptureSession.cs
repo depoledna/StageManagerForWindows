@@ -51,7 +51,7 @@ namespace StageManager.Composition
 		// resting trapezoid. Opacity rides here too.
 		private ContainerVisual? _rootContainer;
 		// _contentVisual: HWND-sized child of the root. Carries the affine content
-		// transform (hover scale / per-row shear / cursor pull) — kept OFF the root
+		// transform (hover scale / per-row shear) — kept OFF the root
 		// so the root's matrix stays pure perspective (an affine+perspective matrix
 		// on one visual collapses to affine and never divides).
 		private ContainerVisual? _contentVisual;
@@ -65,6 +65,12 @@ namespace StageManager.Composition
 		private SizeInt32 _lastSurfaceSize;
 		private volatile bool _disposed;
 		private volatile bool _paused;
+		// Flips once the first captured frame has actually been blitted into the surface.
+		// Start() creates that surface blank, so anything drawing this session renders
+		// fully transparent until then. A scene transition waits on this before parking
+		// the real window the flying card is standing in for — otherwise the window goes
+		// off-screen while its stand-in still has nothing to show.
+		private volatile bool _hasFrame;
 
 		// Cached so the pure perspective matrix on _rootContainer can be rebuilt
 		// when either the container size or the depth changes.
@@ -72,6 +78,10 @@ namespace StageManager.Composition
 		private float _perspectiveDepthPx; // 0 = no perspective until SetPerspective
 
 		public Visual? RootVisual => _rootContainer;
+
+		/// <summary>True once at least one captured frame has reached the surface.</summary>
+		public bool HasFrame => _hasFrame;
+
 		public event EventHandler? TargetClosed;
 
 		public CaptureSession(IntPtr hwnd, Compositor compositor, D3DDeviceHolder devices)
@@ -501,6 +511,8 @@ namespace StageManager.Composition
 							srcTex, 0,
 							null);
 					}
+
+					_hasFrame = true;
 				}
 				catch (Exception ex)
 				{

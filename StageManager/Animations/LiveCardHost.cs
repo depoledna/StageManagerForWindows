@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using StageManager.Composition;
 using StageManager.Controls;
 using StageManager.Helpers;
+using StageManager.Model;
 
 namespace StageManager.Animations
 {
@@ -37,8 +38,8 @@ namespace StageManager.Animations
 
 		// The tray tile's resting edge angles, captured at borrow. The card interpolates
 		// these to (0,0) as it flies to the stage, re-solving the sprite rotation against
-		// its CURRENT height every frame — see SetEdgeShape. Zero for owned cards (no
-		// tile to inherit from), which stay flat.
+		// its CURRENT height every frame — see SetEdgeShape. Unset for owned cards, which
+		// have no tile to inherit from and read the tilt law directly instead.
 		private double _restTopEdgeDegrees;
 		private double _restBottomEdgeDegrees;
 		private double _lastAppliedRotationDegrees = double.NaN;
@@ -88,6 +89,10 @@ namespace StageManager.Animations
 				card._ownedSession = session;
 				card._session = session;
 				card._host.Root = session.RootVisual;
+				// Same seeding Mount does for a borrowed visual. Without it the owned
+				// session has no camera, the sprite's Y-rotation has nothing to divide
+				// against, and the card renders dead flat however it is skewed.
+				session.SetPerspective((float)CompositionThumbnail.PerspectiveDepthPx);
 				return card;
 			}
 			catch (Exception ex)
@@ -133,8 +138,19 @@ namespace StageManager.Animations
 
 			_session.SetVisualSize(new Vector2(hwndWpx, hwndHpx), new Vector2(baseWpx, baseHpx));
 			_session.SetCornerRadius((float)(_cornerRadius * _dpi.X), new Vector2(baseWpx, baseHpx));
-			SetEdgeShape(skewDegrees, baseHpx, hwndWpx, hwndHpx);
+			SetEdgeShape(skewDegrees, baseRect, baseHpx, hwndWpx, hwndHpx);
 		}
+
+		/// <summary>
+		/// The pair of resting edge angles this card interpolates toward the tray.
+		/// A borrowed card inherits its tray tile's, captured at borrow. An owned card
+		/// has no tile, so it reads the tray tilt law at its own current edges — the same
+		/// law that gave the tile its angles, evaluated where the card actually is.
+		/// </summary>
+		private (double Top, double Bottom) RestEdgeDegrees(Rect baseRect)
+			=> _borrowedTile is not null
+				? (_restTopEdgeDegrees, _restBottomEdgeDegrees)
+				: (SceneModel.EdgeTiltDegreesAt(baseRect.Top), SceneModel.EdgeTiltDegreesAt(baseRect.Bottom));
 
 		/// <summary>
 		/// Re-solves the card's trapezoid against its CURRENT height, every frame.
@@ -150,31 +166,25 @@ namespace StageManager.Animations
 		/// CompositionThumbnail does for the resting tile.
 		/// </para>
 		/// </summary>
-		private void SetEdgeShape(double skewDegrees, float baseHpx, float hwndWpx, float hwndHpx)
+		private void SetEdgeShape(double skewDegrees, Rect baseRect, float baseHpx, float hwndWpx, float hwndHpx)
 		{
 			if (_session is null) return;
 
-			// Owned cards have no tile to inherit a trapezoid from. Keep their original
-			// behaviour — skewDegrees straight through as a plain shear, no rotation, so
-			// the stage→tray card still tilts as it flies.
-			if (_restTopEdgeDegrees == 0.0 && _restBottomEdgeDegrees == 0.0)
-			{
-				_session.SetTransformMatrix(
-					CompositionThumbnail.ComposeTransform(skewDegrees, 1.0, 0, 0, hwndWpx, hwndHpx));
-				return;
-			}
-
-			// skewDegrees carries how much "tray-ness" is left: TrayTiltDegrees at the
-			// tray end of the flight, 0 at the stage end. Reuse it as the interpolation
-			// fraction for the inherited edge angles so the trapezoid flattens in
-			// lockstep with the flight and lands perfectly square on the stage.
+			// skewDegrees carries how much "tray-ness" the card has: TrayTiltDegrees at
+			// the tray end of the flight, 0 at the stage end. Reuse it as the interpolation
+			// fraction for the resting edge angles so the trapezoid folds and unfolds in
+			// lockstep with the flight — square on the stage, full tray shape at the strip.
+			// Both directions run this same solve; the stage→tray card used to take a
+			// shortcut that fed skewDegrees in as a raw shear, which is a parallelogram,
+			// not a trapezoid, and at 2° it read as no tilt at all.
 			double trayFraction = CompositionThumbnail.TrayTiltDegrees > 0.0
 				? Math.Clamp(skewDegrees / CompositionThumbnail.TrayTiltDegrees, 0.0, 1.0)
 				: 0.0;
 
+			var rest = RestEdgeDegrees(baseRect);
 			var (shearDegrees, rotationDegrees) = CompositionThumbnail.SolveEdgeAngles(
-				_restTopEdgeDegrees * trayFraction,
-				_restBottomEdgeDegrees * trayFraction,
+				rest.Top * trayFraction,
+				rest.Bottom * trayFraction,
 				baseHpx);
 
 			// Dirty-check: one WinRT interop call per frame per card saved whenever the
@@ -186,8 +196,12 @@ namespace StageManager.Animations
 			}
 
 			_session.SetTransformMatrix(
-				CompositionThumbnail.ComposeTransform(shearDegrees, 1.0, 0, 0, hwndWpx, hwndHpx));
+				CompositionThumbnail.ComposeTransform(shearDegrees, 1.0, hwndWpx, hwndWpx, hwndHpx));
 		}
+
+		// A borrowed session has been running behind a tray tile and is already showing
+		// frames; an owned one was started microseconds ago and is still blank.
+		public bool HasContent => _session?.HasFrame ?? false;
 
 		public void SetVisible(bool visible)
 		{

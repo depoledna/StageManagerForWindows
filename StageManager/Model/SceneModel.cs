@@ -90,6 +90,48 @@ namespace StageManager.Model
 		// screen, scaled with monitor height.
 		private const double EdgePerspectiveDistanceRatio = 1379.0 / 1169.0;
 
+		/// <summary>
+		/// The tilt law: the angle a horizontal card edge sits at when it crosses screen
+		/// <paramref name="yDip"/>. Positive = the right end rises. Purely a function of
+		/// height above or below the screen centre, so a card flying into the tray can
+		/// solve its own angles from where it currently is, exactly as a resting row does.
+		/// </summary>
+		public static double EdgeTiltDegreesAt(double yDip)
+		{
+			double screenH = System.Windows.SystemParameters.PrimaryScreenHeight;
+			if (screenH <= 0.0) return 0.0;
+			double d = screenH * EdgePerspectiveDistanceRatio;
+			return Math.Atan((yDip - screenH / 2.0) / d) * 180.0 / Math.PI;
+		}
+
+		/// <summary>
+		/// The tray card size a window of this source size gets, in DIPs. Single source of
+		/// truth for the sizing law: the resting tile reads it here, and so does a card
+		/// flying INTO the tray, which has no tile yet to measure but must land on exactly
+		/// the size one will have.
+		/// </summary>
+		public static (double Width, double Height) CardSizeDip(double sourceWidthDip, double sourceHeightDip)
+		{
+			if (sourceWidthDip <= 0 || sourceHeightDip <= 0)
+				return (0, 0);
+
+			double s = Math.Max(BaseCardScale, MinCardHeightDip / sourceHeightDip);
+			double cardW = sourceWidthDip * s;
+			double cardH = sourceHeightDip * s;
+
+			// macOS anchors the card's perspective at its LEFT edge
+			// (y' = Y − u(Y − pivot)/d), so the mid-column height is
+			// H·(1 − W/(2d)) while the width stays W. Our renderer converges
+			// symmetrically AND aspect-fits the capture, so the two dimensions
+			// can't be steered independently: shrinking both by (1 − W/(2d))
+			// reproduces the Mac mid-column and left-edge heights exactly and
+			// leaves only the width up to ~7% narrow on the widest cards
+			// (which macOS clips at the strip edge anyway).
+			double dDip = System.Windows.SystemParameters.PrimaryScreenHeight * EdgePerspectiveDistanceRatio;
+			double squeeze = 1.0 - cardW / (2.0 * dDip);
+			return (cardW * squeeze, cardH * squeeze);
+		}
+
 		public void UpdatePreviewSizes()
 		{
 			if (Windows is null || !Windows.Any())
@@ -104,26 +146,11 @@ namespace StageManager.Model
 				if (pxW <= 0 || pxH <= 0)
 					continue;
 
-				double wDip = pxW / dipScale;
-				double hDip = pxH / dipScale;
-				double s = Math.Max(BaseCardScale, MinCardHeightDip / hDip);
-				double cardW = wDip * s;
-				double cardH = hDip * s;
+				var (cardW, cardH) = CardSizeDip(pxW / dipScale, pxH / dipScale);
+				window.PreviewWidth = cardW;
+				window.PreviewHeight = cardH;
 
-				// macOS anchors the card's perspective at its LEFT edge
-				// (y' = Y − u(Y − pivot)/d), so the mid-column height is
-				// H·(1 − W/(2d)) while the width stays W. Our renderer converges
-				// symmetrically AND aspect-fits the capture, so the two dimensions
-				// can't be steered independently: shrinking both by (1 − W/(2d))
-				// reproduces the Mac mid-column and left-edge heights exactly and
-				// leaves only the width up to ~7% narrow on the widest cards
-				// (which macOS clips at the strip edge anyway).
-				double dDip = System.Windows.SystemParameters.PrimaryScreenHeight * EdgePerspectiveDistanceRatio;
-				double squeeze = 1.0 - cardW / (2.0 * dDip);
-				window.PreviewWidth = cardW * squeeze;
-				window.PreviewHeight = cardH * squeeze;
-
-				System.Diagnostics.Debug.WriteLine($"[ThumbnailScale] Scene '{Title}' – Window '{window.Title}' source={pxW}x{pxH}px => card={window.PreviewWidth:F1}x{window.PreviewHeight:F1}dip (s={s:F4})");
+				System.Diagnostics.Debug.WriteLine($"[ThumbnailScale] Scene '{Title}' – Window '{window.Title}' source={pxW}x{pxH}px => card={window.PreviewWidth:F1}x{window.PreviewHeight:F1}dip");
 			}
 		}
 

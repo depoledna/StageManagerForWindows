@@ -220,15 +220,55 @@ namespace StageManager
 				outgoingSource = GetCurrentSceneWindowBounds();
 			Log.Info("TRANSITION", $"Outgoing: model={outgoingModel != null} source={outgoingSource}");
 
-			if (outgoingSource != Rect.Empty)
+			// Deliberately NOT run yet. Every step here takes real content off the screen,
+			// and the flying cards that replace it are not on screen until the animator has
+			// arranged them and their capture has a frame. Running this first is what left
+			// the stage blank for two frames and the tray tile for one; the animator calls
+			// it back at the moment the cards actually cover what it hides.
+			void HideWhatTheCardsCover()
 			{
-				Log.Info("TRANSITION", "Pre-hiding current scene windows");
-				SceneManager.HideCurrentSceneWindows();
+				if (outgoingSource != Rect.Empty)
+				{
+					Log.Info("TRANSITION", "Pre-hiding current scene windows");
+					SceneManager.HideCurrentSceneWindows();
+				}
+
+				// The clicked tile is about to be hidden and the tray rebuilt around it, so no
+				// tile still under the cursor will get its MouseLeave. Unwind hover state now,
+				// while the transforms are still reachable.
+				ResetAllSceneHoverTransforms();
+
+				Log.Info("TRANSITION", $"Hiding sidebar item '{sceneModel.Title}' (reserving space)");
+				sceneModel.IsHiddenButReserved = true;
+				sceneModel.IsVisible = false;
 			}
 
-			Log.Info("TRANSITION", $"Hiding sidebar item '{sceneModel.Title}' (reserving space)");
-			sceneModel.IsHiddenButReserved = true;
-			sceneModel.IsVisible = false;
+			// The mirror image of the above: this is what puts the real content back, and it
+			// runs while the cards are still parked on their targets. It also waits out the
+			// tray tile the switch rebuilds for the outgoing scene — that tile starts a fresh
+			// capture session, and dropping the outgoing card before its first frame just
+			// moves the blank frame from the stage to the tray.
+			var switched = false;
+			async Task ShowWhatTheCardsUncover()
+			{
+				Log.Info("TRANSITION", "Calling SwitchTo");
+				switched = await SceneManager.SwitchTo(scene);
+				if (!switched)
+				{
+					Log.Info("TRANSITION", "SwitchTo blocked, restoring sidebar state");
+					SyncVisibilityByUpdatedTimeStamp();
+				}
+				Log.Info("TRANSITION", $"SwitchTo completed, switched={switched} scenes={Scenes.Count}");
+
+				if (outgoingModel is null) return;
+
+				// The tile does not exist until the tray rebuild raised by SwitchTo has been
+				// laid out, so let that settle before looking for it.
+				await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
+				var outgoingTile = FindSceneThumbnail(outgoingModel, outgoingModel.Windows.FirstOrDefault()?.Handle ?? IntPtr.Zero);
+				await SceneTransitionAnimator.WaitForAsync(
+					() => outgoingTile?.Session?.HasFrame ?? true, "outgoing tray tile");
+			}
 
 			if (sidebarSlot != Rect.Empty && incomingTarget != Rect.Empty)
 			{
@@ -239,18 +279,16 @@ namespace StageManager
 					GetWorkAreaBounds(),
 					sidebarSlot, incomingTarget, sceneModel, incomingTile,
 					outgoingSource, sidebarSlot, outgoingModel, outgoingHandle,
-						dpi, SidebarThumbCornerRadius);
+						dpi, SidebarThumbCornerRadius, HideWhatTheCardsCover, ShowWhatTheCardsUncover);
 				Log.Info("TRANSITION", "Animation completed");
 			}
-
-			Log.Info("TRANSITION", "Calling SwitchTo");
-			var switched = await SceneManager.SwitchTo(scene);
-			if (!switched)
+			else
 			{
-				Log.Info("TRANSITION", "SwitchTo blocked, restoring sidebar state");
-				SyncVisibilityByUpdatedTimeStamp();
+				// No cards, so nothing to hide behind and nothing to wait for.
+				HideWhatTheCardsCover();
+				await ShowWhatTheCardsUncover();
 			}
-			Log.Info("TRANSITION", $"SwitchTo completed, switched={switched} scenes={Scenes.Count}");
+
 			return switched;
 		}
 
@@ -581,6 +619,9 @@ namespace StageManager
 				case WindowUpdateType.MoveEnd:
 					Dispatcher.Invoke(() => _dragDropManager?.OnWindowMoveEnd(window));
 					break;
+				case WindowUpdateType.Move:
+					Dispatcher.Invoke(() => _dragDropManager?.OnWindowMoved(window));
+					break;
 			}
 		}
 
@@ -620,12 +661,32 @@ namespace StageManager
 			if (_trayMenuOpen)
 				return;
 
+			// A stage→tray drag that has taken over from the OS move loop has no MOVESIZEEND
+			// left to end it, so the release has to come from here. It owns this event when
+			// it takes it — nothing below may also act on it.
+			if (_dragDropManager is object)
+			{
+				var x = e.Data.X;
+				var y = e.Data.Y;
+				bool consumed = Dispatcher.Invoke(() => _dragDropManager.OnGlobalMouseUp(x, y));
+				if (consumed)
+				{
+					_mouseDownScene = null;
+					return;
+				}
+			}
+
 			if (EnableWindowPullToScene)
 			{
-				// WPF drag is handled by ScenesControl_PreviewMouseLeftButtonUp — only legacy pull remains
-				if (!IsSidebarDragging && e.Data.X > _lastWidth && _mouseDownScene is object)
+				// WPF drag is handled by ScenesControl_PreviewMouseLeftButtonUp — only legacy pull remains.
+				// e.Data.X is a hook coordinate: physical pixels. _lastWidth is the sidebar's WPF
+				// width: DIPs. Comparing them directly made everything right of half the sidebar
+				// count as "released outside" at 200% scale, so an ordinary click on the right of a
+				// tile pulled its window onto the stage instead of switching to it.
+				var sidebarRightPhysical = _lastWidth * _lastDpiX;
+				if (!IsSidebarDragging && e.Data.X > sidebarRightPhysical && _mouseDownScene is object)
 				{
-					Log.Info("DRAG", $"Pulled window from scene '{_mouseDownScene.Title}' (mouseX={e.Data.X} > sidebarWidth={_lastWidth})");
+					Log.Info("DRAG", $"Pulled window from scene '{_mouseDownScene.Title}' (mouseX={e.Data.X} > sidebarRight={sidebarRightPhysical})");
 					this.Dispatcher.Invoke(() =>
 					{
 						SceneManager.PopWindowFrom(_mouseDownScene.Scene).SafeFireAndForget();
@@ -700,74 +761,6 @@ namespace StageManager
 			Log.Info("DRAG", $"WPF mousedown on '{scene.Title}' at ({_wpfDragStartPoint.X:F0},{_wpfDragStartPoint.Y:F0})");
 		}
 
-		// Max DIPs the scene tile pulls toward the cursor at the Grid edge.
-		private const double ScenePullStrength = 5.0;
-
-		// Pursuit is direct-set (no animation) so the tile snaps to cursor pos.
-		// Only recoil-to-zero is animated, with EaseOut for soft release.
-		private static readonly CubicEase _scenePullEase = CreateFrozenEase(EasingMode.EaseOut);
-		private static readonly Duration _scenePullRecoilDuration = new Duration(TimeSpan.FromMilliseconds(220));
-
-		private static CubicEase CreateFrozenEase(EasingMode mode)
-		{
-			var ease = new CubicEase { EasingMode = mode };
-			ease.Freeze();
-			return ease;
-		}
-
-		// Pointer-driven directional pull: cursor → tile center vector mapped to
-		// TranslateTransform.X/Y on the scene Grid. CompositionThumbnail mirrors
-		// this via MirrorTranslateX/Y so the HwndHost surface follows in lockstep.
-		// Pursuit is unanimated — tile snaps to cursor position on every move.
-		// Recoil keeps an EaseOut on Leave for a softer release.
-		private void Scene_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
-		{
-			// Skip while a button is pressed — drag logic owns the cursor then.
-			if (e.LeftButton == System.Windows.Input.MouseButtonState.Pressed) return;
-			if (sender is not Grid grid) return;
-			if (grid.ActualWidth <= 0 || grid.ActualHeight <= 0) return;
-			if (grid.RenderTransform is not TransformGroup tg) return;
-			if (tg.Children.Count < 2 || tg.Children[1] is not TranslateTransform tt) return;
-
-			var pos = e.GetPosition(grid);
-			var halfW = grid.ActualWidth / 2.0;
-			var halfH = grid.ActualHeight / 2.0;
-			var nx = Math.Clamp((pos.X - halfW) / halfW, -1.0, 1.0);
-			var ny = Math.Clamp((pos.Y - halfH) / halfH, -1.0, 1.0);
-
-			// Clear any in-flight recoil animation so direct property writes
-			// actually take effect (otherwise the running anim wins on every
-			// render tick until it completes).
-			tt.BeginAnimation(TranslateTransform.XProperty, null);
-			tt.BeginAnimation(TranslateTransform.YProperty, null);
-			tt.X = nx * ScenePullStrength;
-			tt.Y = ny * ScenePullStrength;
-		}
-
-		private void Scene_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
-		{
-			if (sender is not Grid grid) return;
-			if (grid.RenderTransform is not TransformGroup tg) return;
-			if (tg.Children.Count < 2 || tg.Children[1] is not TranslateTransform tt) return;
-
-			var curX = (double)tt.GetValue(TranslateTransform.XProperty);
-			var curY = (double)tt.GetValue(TranslateTransform.YProperty);
-			tt.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation
-			{
-				From = curX,
-				To = 0,
-				Duration = _scenePullRecoilDuration,
-				EasingFunction = _scenePullEase
-			});
-			tt.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation
-			{
-				From = curY,
-				To = 0,
-				Duration = _scenePullRecoilDuration,
-				EasingFunction = _scenePullEase
-			});
-		}
-
 		private void ScenesControl_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
 		{
 			if (_wpfDragScene == null) return;
@@ -836,7 +829,7 @@ namespace StageManager
 
 				_sidebarDragGhost.UpdatePositionAndSize(
 					cursorLogicalX - _sidebarDragThumbRect.Width / 2,
-					cursorLogicalY - _sidebarDragThumbRect.Height / 2,
+					DragDropManager.CardTopFor(cursorLogicalY, _sidebarDragThumbRect.Height),
 					_sidebarDragThumbRect.Width,
 					_sidebarDragThumbRect.Height,
 						CompositionThumbnail.TrayTiltDegrees);
@@ -851,7 +844,7 @@ namespace StageManager
 
 				_sidebarDragGhost.UpdatePositionAndSize(
 					cursorLogicalX - ghostW / 2,
-					cursorLogicalY - ghostH / 2,
+					DragDropManager.CardTopFor(cursorLogicalY, ghostH),
 					ghostW, ghostH,
 						DragDropManager.Lerp(CompositionThumbnail.TrayTiltDegrees, 0.0, t));
 			}
@@ -872,7 +865,7 @@ namespace StageManager
 					int winW = (int)(_sidebarDragWindowRect.Width * dpi.X);
 					int winH = (int)(_sidebarDragWindowRect.Height * dpi.Y);
 					int winX = (int)(screenPos.X - winW / 2.0);
-					int winY = (int)(screenPos.Y - winH / 2.0);
+					int winY = (int)(DragDropManager.CardTopFor(screenPos.Y / dpi.Y, _sidebarDragWindowRect.Height) * dpi.Y);
 					Win32.SetWindowPos(_sidebarDragWindow.Handle, IntPtr.Zero,
 						winX, winY, winW, winH,
 						Win32.SetWindowPosFlags.DoNotActivate);
@@ -897,6 +890,14 @@ namespace StageManager
 				{
 					Log.Info("DRAG", $"WPF drop (phase={phase}), pulling from '{_wpfDragScene.Title}'");
 					var scene = _wpfDragScene.Scene;
+
+					// The drag moved the real window to the cursor with a direct SetWindowPos, so the
+					// position OpacityWindowStrategy saved when the window was first parked is stale.
+					// Drop it: CancelWpfDrag re-parks the window, and that Hide now records where the
+					// user let go, so the Show that follows the move puts it under the ghost.
+					if (_sidebarDragWindow != null)
+						Strategies.OpacityWindowStrategy.ForgetOriginalPosition(_sidebarDragWindow.Handle);
+
 					CancelWpfDrag();
 					SceneManager.PopWindowFrom(scene).SafeFireAndForget();
 				}
@@ -1050,8 +1051,11 @@ namespace StageManager
 				double yTop = windowTop + panelOrigin.Y + slot.Y;
 				double yBottom = yTop + inner.ActualHeight;
 
-				scene.TiltTopDegrees = Math.Atan((yTop - centerY) / d) * 180.0 / Math.PI;
-				scene.TiltBottomDegrees = Math.Atan((yBottom - centerY) / d) * 180.0 / Math.PI;
+				// centerY / d above are kept for the log line only — the geometry
+				// measurement pass parses them. The angles themselves come from the
+				// shared law so the flying card can solve its own from the same source.
+				scene.TiltTopDegrees = SceneModel.EdgeTiltDegreesAt(yTop);
+				scene.TiltBottomDegrees = SceneModel.EdgeTiltDegreesAt(yBottom);
 				// Invariant format - parsed by the geometry measurement pass.
 				Log.Info("TILT", FormattableString.Invariant($"scene='{scene.Title}' yTop={yTop:F1} yBottom={yBottom:F1} centerY={centerY:F1} d={d:F1} top={scene.TiltTopDegrees:F3} bottom={scene.TiltBottomDegrees:F3}"));
 			}
@@ -1269,21 +1273,30 @@ namespace StageManager
 		}
 
 		/// <summary>
-		/// Zero the cursor-pull TranslateTransform on every scene tile. Matches the
-		/// transform shape Scene_MouseMove writes (TransformGroup, Translate at [1]).
-		/// Used when the sidebar stows, since MouseLeave may not fire then.
+		/// Return every scene tile to its resting scale. Matches the shape the SceneOpacity
+		/// style installs: a ScaleTransform carrying the 1.08 hover pop.
+		/// <para>
+		/// It only ever unwinds when the cursor leaves the tile, via the trigger's ExitActions,
+		/// and holds its last value indefinitely when that never happens. Two paths take the
+		/// tile out from under a resting cursor without firing it: the sidebar stowing, and a
+		/// scene switch hiding and rebuilding the tiles. The tile is then left popped out.
+		/// </para>
 		/// </summary>
-		private void ResetAllScenePulls()
+		private void ResetAllSceneHoverTransforms()
 		{
 			foreach (var grid in EnumerateVisualDescendants<Grid>(scenesControl))
 			{
-				if (grid.RenderTransform is not TransformGroup tg) continue;
-				if (tg.Children.Count < 2 || tg.Children[1] is not TranslateTransform tt) continue;
-				if (tt.X == 0 && tt.Y == 0) continue;
-				tt.BeginAnimation(TranslateTransform.XProperty, null);
-				tt.BeginAnimation(TranslateTransform.YProperty, null);
-				tt.X = 0;
-				tt.Y = 0;
+				// The style's transform is a shared frozen instance until a storyboard clones it
+				// per element, so a tile that was never hovered is read-only — and already resting.
+				if (grid.RenderTransform is not ScaleTransform st || st.IsFrozen) continue;
+				if (st.ScaleX == 1 && st.ScaleY == 1) continue;
+
+				// The hover storyboard holds 1.08 with FillBehavior.HoldEnd. Detaching the
+				// clock first is what lets the local write below take effect.
+				st.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+				st.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+				st.ScaleX = 1;
+				st.ScaleY = 1;
 			}
 		}
 
@@ -1332,13 +1345,10 @@ namespace StageManager
 			if (Left == newLeft)
 				return;
 
-			// Hovering a tile writes a cursor-pull TranslateTransform that
-			// Scene_MouseLeave normally recoils to 0. When the sidebar stows, the
-			// cursor can leave without MouseLeave ever firing, so a pulled tile
-			// stays stuck off-center (−X if the cursor was on its left half) until
-			// the next scene switch rebuilds the transform. Zero all pulls on stow.
+			// The cursor can leave without MouseLeave ever firing when the sidebar stows,
+			// which strands the hover transforms. Reset them here.
 			if (Mode == StageManager.WindowMode.OffScreen)
-				ResetAllScenePulls();
+				ResetAllSceneHoverTransforms();
 
 			// Drop-into-tray: snap to final state, no unstow slide.
 			if (_suppressNextModeSlide)
@@ -1485,6 +1495,11 @@ namespace StageManager
 		private Point _dpi = new(1.0, 1.0);
 		private bool _dpiCached;
 
+		// Snapshot of Dpi.X for the SharpHook callbacks. They run off the UI thread and
+		// hook coordinates are physical, so anything they compare against a WPF DIP width
+		// has to be scaled — see OnMouseReleased.
+		private double _lastDpiX = 1.0;
+
 		private Point Dpi
 		{
 			get
@@ -1495,6 +1510,7 @@ namespace StageManager
 					return _dpi; // pre-source-init: return fallback but don't cache it
 				_dpi = new Point(source.CompositionTarget.TransformToDevice.M11, source.CompositionTarget.TransformToDevice.M22);
 				_dpiCached = true;
+				_lastDpiX = _dpi.X;
 				return _dpi;
 			}
 		}

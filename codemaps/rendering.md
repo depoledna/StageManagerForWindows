@@ -61,7 +61,7 @@ disposing a WinRT session inside an input-synchronous message pump throws `RPC_E
 ### `CompositionThumbnail` — geometry authority
 
 Dependency properties: `PreviewHandle`, `CornerRadius`, `TopEdgeDegrees`, `BottomEdgeDegrees`,
-`MirrorScale`, `MirrorTranslateX/Y`, `MirrorOpacity`.
+`MirrorScale`, `MirrorOpacity`.
 
 Constants:
 

@@ -26,6 +26,15 @@ namespace StageManager.Native.PInvoke
         public static readonly uint WM_LBUTTONDOWN = 0x0201;
         public static readonly uint WM_LBUTTONUP = 0x0202;
 
+        // Ends a modal loop. DefWindowProc breaks the SC_MOVE title-bar drag loop on
+        // receipt, which is how the stage→tray drag takes the window off the OS and
+        // drives it itself.
+        public static readonly uint WM_CANCELMODE = 0x001F;
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
         public static readonly UIntPtr SC_CLOSE = (UIntPtr)0xF060;
 
         public delegate IntPtr HookProc(int code, UIntPtr wParam, IntPtr lParam);

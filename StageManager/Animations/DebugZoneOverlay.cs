@@ -65,8 +65,7 @@ namespace StageManager.Animations
 				foreach (var z in _zones)
 					_animator.Overlay.Canvas.Children.Remove(z);
 				_zones = null;
-				if (_animator.Overlay.Canvas.Children.Count == 0)
-					_animator.Overlay.Hide();
+				// Overlay stays shown — see SceneTransitionAnimator.WarmUp.
 			}
 		}
 	}

@@ -88,11 +88,11 @@ namespace StageManager.Animations
 
 		public void Hide()
 		{
-			var overlay = _animator.Overlay;
 			_card?.Release();
 			_card = null;
-			if (overlay is not null && overlay.Canvas.Children.Count == 0)
-				overlay.Hide();
+			// The overlay itself stays shown — see SceneTransitionAnimator.WarmUp. Hiding
+			// it here made the next scene switch pay a composition frame to show it again,
+			// and that frame is one the tray tile spends already blanked by the borrow.
 			_isActive = false;
 			Log.Info("DRAG", "Ghost hidden");
 		}

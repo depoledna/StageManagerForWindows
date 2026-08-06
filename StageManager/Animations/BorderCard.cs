@@ -35,6 +35,9 @@ namespace StageManager.Animations
 				st.ScaleX = Math.Cos(skewDegrees * Math.PI / 180.0);
 		}
 
+		// The placeholder is a WPF Border with its icon already set — nothing to wait for.
+		public bool HasContent => true;
+
 		public void SetVisible(bool visible) =>
 			_border.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
 

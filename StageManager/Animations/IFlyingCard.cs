@@ -15,6 +15,13 @@ namespace StageManager.Animations
 		/// <param name="skewDegrees">3D Y-tilt (tray angle in the sidebar, 0 flat on stage).</param>
 		void Update(Rect baseRect, double skewDegrees);
 
+		/// <summary>
+		/// True once the card actually has something to draw. A card backed by a
+		/// freshly started capture session is transparent until its first frame lands,
+		/// so a transition must not hide the real content it stands in for before this.
+		/// </summary>
+		bool HasContent { get; }
+
 		void SetVisible(bool visible);
 
 		void Release();

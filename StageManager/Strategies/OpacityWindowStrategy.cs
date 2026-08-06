@@ -41,6 +41,21 @@ namespace StageManager.Strategies
 		}
 
 		/// <summary>
+		/// Discards the saved position of a window that was repositioned while parked. Hide keeps
+		/// the first saved position so a second Hide cannot overwrite it with the off-screen point,
+		/// which also means a direct SetWindowPos behind the strategy's back (the sidebar drag moves
+		/// the real window to the cursor) leaves a stale entry that Show would restore. Callers that
+		/// move a parked window on purpose call this so the next Hide re-reads the live rect.
+		/// </summary>
+		public static void ForgetOriginalPosition(IntPtr hWnd)
+		{
+			lock (_globalLock)
+			{
+				_originalPositions.Remove(hWnd);
+			}
+		}
+
+		/// <summary>
 		/// Cleans up all per-window state (locks, saved positions) when a window is destroyed.
 		/// </summary>
 		public static void CleanupWindow(IntPtr hWnd)

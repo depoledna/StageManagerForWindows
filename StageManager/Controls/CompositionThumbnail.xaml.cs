@@ -60,8 +60,8 @@ namespace StageManager.Controls
 		private bool _teardownPending;
 
 		// Each side. Total HWND inflation = 1 + 2 * HoverHeadroom. 30% per side
-		// covers worst-case lateral overflow at peak hover (scale 1.08 + pull)
-		// plus the 3D-tilt near-edge enlargement. Shared: LiveCardHost sizes the
+		// covers worst-case lateral overflow at peak hover — the pop is left-anchored,
+		// so all 8% of it lands on the right — plus the 3D-tilt near-edge enlargement. Shared: LiveCardHost sizes the
 		// borrowed drag/fly card with the same headroom so the host rect matches
 		// the tile's and the skewed edge isn't clipped differently at handoff.
 		internal const double HoverHeadroom = 0.30;
@@ -191,32 +191,6 @@ namespace StageManager.Controls
 		{
 			get => (double)GetValue(MirrorScaleProperty);
 			set => SetValue(MirrorScaleProperty, value);
-		}
-
-		// Mirrors the WPF ancestor's animated TranslateTransform.X/Y onto the
-		// SpriteVisual. Values are in DIPs; ApplyTransform converts to pixels.
-		public static readonly DependencyProperty MirrorTranslateXProperty = DependencyProperty.Register(
-			nameof(MirrorTranslateX),
-			typeof(double),
-			typeof(CompositionThumbnail),
-			new PropertyMetadata(0.0, OnTransformInputChanged));
-
-		public double MirrorTranslateX
-		{
-			get => (double)GetValue(MirrorTranslateXProperty);
-			set => SetValue(MirrorTranslateXProperty, value);
-		}
-
-		public static readonly DependencyProperty MirrorTranslateYProperty = DependencyProperty.Register(
-			nameof(MirrorTranslateY),
-			typeof(double),
-			typeof(CompositionThumbnail),
-			new PropertyMetadata(0.0, OnTransformInputChanged));
-
-		public double MirrorTranslateY
-		{
-			get => (double)GetValue(MirrorTranslateYProperty);
-			set => SetValue(MirrorTranslateYProperty, value);
 		}
 
 		// Mirrors the WPF ancestor's animated Opacity onto the SpriteVisual.
@@ -414,9 +388,6 @@ namespace StageManager.Controls
 			// Transform applied to the HWND-sized container — center is HWND/2,
 			// which coincides with the inner sprite's center (sprite is
 			// centered inside the container).
-			var dpi = VisualTreeHelper.GetDpi(this);
-			var translateXPx = MirrorTranslateX * dpi.DpiScaleX;
-			var translateYPx = MirrorTranslateY * dpi.DpiScaleY;
 
 			// Shear + sprite rotation are solved together from the edge-angle pair and
 			// the CURRENT base height — see SolveEdgeAngles for the derivation and for
@@ -429,7 +400,7 @@ namespace StageManager.Controls
 				_session.SetSpriteRotationY((float)rotationDegrees);
 			}
 
-			var matrix = ComposeTransform(shearDegrees, MirrorScale, translateXPx, translateYPx, _lastHwndPixelWidth, _lastHwndPixelHeight);
+			var matrix = ComposeTransform(shearDegrees, MirrorScale, _lastBasePixelWidth, _lastHwndPixelWidth, _lastHwndPixelHeight);
 			if (matrix == _lastAppliedTransform) return;
 			_lastAppliedTransform = matrix;
 			_session.SetTransformMatrix(matrix);
@@ -445,8 +416,8 @@ namespace StageManager.Controls
 		/// "positive = right end rises". Pushing the rect through sprite-rotation →
 		/// content-shear → perspective-divide gives, for shear slope T (M12) and
 		/// convergence Q = H*tan(theta)/(2*depth): slope(top) = T + Q,
-		/// slope(bottom) = T - Q. Width, hover scale and cursor pull all cancel out of
-		/// both, so the split is exact and stays exact while the tile is scaled/pulled.
+		/// slope(bottom) = T - Q. Width and hover scale both cancel out, so the split is
+		/// exact and stays exact while the tile is popped.
 		/// </para>
 		/// <para>
 		/// <b>Must be re-solved whenever the sprite's pixel HEIGHT changes.</b> Inverting
@@ -483,11 +454,22 @@ namespace StageManager.Controls
 			_session.SetOpacity(op);
 		}
 
-		internal static Matrix4x4 ComposeTransform(double angleDegrees, double scale, double translateXPx, double translateYPx, double pixelWidth, double pixelHeight)
+		/// <summary>
+		/// Affine part of a tile's look: the per-row shear plus the hover scale, the latter
+		/// anchored on the sprite's LEFT edge.
+		/// <para>
+		/// The anchor is why <paramref name="basePixelWidth"/> is here. The matrix has to
+		/// pivot on the container centre — the shear's zero-crossing must stay there or the
+		/// whole card slides vertically by tan(shear)*halfWidth — so the scale is centred
+		/// too and pulls the sprite's left edge out by (s-1)*baseW/2. The tray aligns every
+		/// tile on one left edge, so that bias is re-added as a translation and the growth
+		/// ends up all on the right. Matches RenderTransformOrigin="0,0.5" on the WPF tile.
+		/// </para>
+		/// </summary>
+		internal static Matrix4x4 ComposeTransform(double angleDegrees, double scale, double basePixelWidth, double pixelWidth, double pixelHeight)
 		{
 			var s = (float)scale;
-			var tx = (float)translateXPx;
-			var ty = (float)translateYPx;
+			var tx = (float)((scale - 1.0) * basePixelWidth / 2.0);
 
 			// No identity early-out: the perspective below is applied to EVERY tile,
 			// so even a flat middle row (angle 0, scale 1, no pull) gets the trapezoid.
@@ -513,11 +495,11 @@ namespace StageManager.Controls
 			// native rotation on the sprite; see SetPerspective / SetSpriteRotationY),
 			// because Composition only foreshortens when perspective sits alone on an
 			// ancestor of the rotated visual. This matrix is affine only: scale +
-			// per-row shear + cursor pull.
+			// per-row shear.
 
-			// Center → transform → re-center, then bias re-center by translate.
+			// Center → transform → re-center, then bias re-center by the left-anchor shift.
 			var t1 = Matrix4x4.CreateTranslation(-cx, -cy, 0);
-			var t2 = Matrix4x4.CreateTranslation(cx + tx, cy + ty, 0);
+			var t2 = Matrix4x4.CreateTranslation(cx + tx, cy, 0);
 			return t1 * inner * t2;
 		}
 
