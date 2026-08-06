@@ -176,10 +176,26 @@ namespace StageManager.Strategies
 					}
 				}
 
+				// IgnoreZOrder matters: hWndInsertAfter of Zero is HWND_TOP, so without it every
+				// park yanked the window to the FRONT of the z-chain on its way off-screen.
+				// Parking is meant to be invisible, and the stacking a scene had when it was
+				// last on screen is read back later to restore it (SceneManager.CaptureZOrder).
 				Win32.SetWindowPos(hWnd, IntPtr.Zero,
 					point.X, point.Y, 0, 0,
 					Win32.SetWindowPosFlags.IgnoreResize |
+					Win32.SetWindowPosFlags.IgnoreZOrder |
 					Win32.SetWindowPosFlags.DoNotActivate);
+
+				// A parked window must be OPAQUE, and nothing else guarantees it. Callers hide
+				// windows with alpha 0 before this runs — UncloakStartupMinimized does it to
+				// bring a startup-minimized window back without flashing it, and
+				// RestoreMinimizedInvisibly does the same — and only Show ever raises alpha
+				// again, which by definition never runs for a window that stays in the tray.
+				// Left at 0, WGC (which captures DWM's POST-alpha output, see the class remarks)
+				// feeds the sidebar fully transparent frames and the tile renders empty. Alpha
+				// is doing no hiding work once the window is off-screen, so raise it here, after
+				// the move so there is no frame where it is both opaque and still on screen.
+				Win32Helper.SetAlpha(hWnd, 255);
 			}
 			finally
 			{
