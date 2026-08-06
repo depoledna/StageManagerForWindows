@@ -5,8 +5,11 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.Xml.Linq;
 
 namespace StageManager.Native
 {
@@ -447,6 +450,13 @@ namespace StageManager.Native
 			var override_ = TryGetKnownUwpOverrideIcon(exe);
 			if (override_ != null) return override_;
 
+			// Before falling back to the exe: a UWP exe carries no icon resource, so
+			// ExtractAssociatedIcon below happily returns Windows' GENERIC application icon
+			// and reports success. The real artwork — the one the taskbar and Start draw —
+			// is declared in the package manifest.
+			var packageLogo = TryGetUwpPackageLogoIcon(exe);
+			if (packageLogo != null) return packageLogo;
+
 			if (!string.IsNullOrWhiteSpace(exe))
 			{
 				try
@@ -495,16 +505,9 @@ namespace StageManager.Native
 
 			try
 			{
-				using var bmp = new Bitmap(pngPath);
-				var hicon = bmp.GetHicon();
-				try
-				{
-					using var borrowed = Icon.FromHandle(hicon);
-					var icon = (Icon)borrowed.Clone();
-					Log.Info("ICON", $"  UWP override: loaded '{pngPath}' ({icon.Width}x{icon.Height})");
-					return icon;
-				}
-				finally { DestroyIcon(hicon); }
+				var icon = LoadPngAsIcon(pngPath);
+				Log.Info("ICON", $"  UWP override: loaded '{pngPath}' ({icon.Width}x{icon.Height})");
+				return icon;
 			}
 			catch (Exception ex)
 			{
@@ -512,6 +515,151 @@ namespace StageManager.Native
 				return null;
 			}
 		}
+
+		#region UWP package logo
+		// How far up from the inner exe to look for the manifest. The exe can sit a couple of
+		// folders inside the package (…\<package>\Notepad\Notepad.exe); the bound stops a
+		// non-packaged exe from walking to the drive root.
+		private const int MaxPackageRootDepth = 5;
+
+		/// <summary>
+		/// The icon the taskbar draws for a packaged (UWP/MSIX) app: the Square44x44Logo
+		/// declared in its AppxManifest.
+		/// <para>
+		/// Needed because a UWP app's exe has no icon resource of its own, so
+		/// <see cref="Icon.ExtractAssociatedIcon"/> returns Windows' generic application icon
+		/// and reports success — indistinguishable, to the caller, from having found the real
+		/// thing. That is why Calculator showed a blank document glyph while its taskbar button
+		/// was correct.
+		/// </para>
+		/// <para>
+		/// Two shorter-looking routes do not work here. <c>AppDisplayInfo.GetLogo</c> returns
+		/// the TILE logo — for Calculator a glyph filling 31% of a large transparent square,
+		/// against 75% for the taskbar asset, so the icon would render at under half the size of
+		/// every other app's. <c>IShellItemImageFactory</c> on shell:AppsFolder does give the
+		/// right artwork, but hands back an HBITMAP whose alpha channel Image.FromHbitmap
+		/// discards, so recovering it needs GetObject/DIBSECTION plus an AUMID lookup — more
+		/// interop than this, not less.
+		/// </para>
+		/// </summary>
+		private static Icon? TryGetUwpPackageLogoIcon(string? exe)
+		{
+			if (string.IsNullOrWhiteSpace(exe)) return null;
+
+			try
+			{
+				var packageRoot = FindPackageRoot(Path.GetDirectoryName(exe));
+				if (packageRoot is null)
+				{
+					Log.Info("ICON", $"  UWP manifest: no AppxManifest.xml above '{exe}'");
+					return null;
+				}
+
+				var declared = ReadSquare44LogoPath(Path.Combine(packageRoot, "AppxManifest.xml"));
+				if (declared is null)
+				{
+					Log.Info("ICON", $"  UWP manifest: no Square44x44Logo in '{packageRoot}'");
+					return null;
+				}
+
+				var asset = ResolveBestAssetVariant(Path.Combine(packageRoot, declared));
+				if (asset is null)
+				{
+					Log.Info("ICON", $"  UWP manifest: no asset on disk for '{declared}'");
+					return null;
+				}
+
+				var icon = LoadPngAsIcon(asset);
+				Log.Info("ICON", $"  UWP manifest: loaded '{asset}' ({icon.Width}x{icon.Height})");
+				return icon;
+			}
+			catch (Exception ex)
+			{
+				Log.Info("ICON", $"  UWP manifest FAILED: {ex.GetType().Name}: {ex.Message}");
+				return null;
+			}
+		}
+
+		private static string? FindPackageRoot(string? startDirectory)
+		{
+			var dir = startDirectory;
+			for (var i = 0; i < MaxPackageRootDepth && !string.IsNullOrEmpty(dir); i++)
+			{
+				if (File.Exists(Path.Combine(dir, "AppxManifest.xml")))
+					return dir;
+				dir = Path.GetDirectoryName(dir);
+			}
+			return null;
+		}
+
+		/// <summary>
+		/// Matched on local names: VisualElements lives in a uap namespace whose version differs
+		/// between manifests, so binding to one URI would work for some packages and silently
+		/// miss others.
+		/// </summary>
+		private static string? ReadSquare44LogoPath(string manifestPath)
+		{
+			var visual = XDocument.Load(manifestPath).Descendants()
+				.FirstOrDefault(e => e.Name.LocalName == "VisualElements");
+			var logo = visual?.Attributes()
+				.FirstOrDefault(a => a.Name.LocalName == "Square44x44Logo")?.Value;
+			return string.IsNullOrWhiteSpace(logo) ? null : logo;
+		}
+
+		/// <summary>
+		/// The manifest names a LOGICAL asset — Calculator declares Assets\CalculatorAppList.png
+		/// and no such file exists. What ships are qualifier variants of it, so the declared path
+		/// has to be treated as a stem.
+		/// </summary>
+		private static string? ResolveBestAssetVariant(string declaredPath)
+		{
+			var dir = Path.GetDirectoryName(declaredPath);
+			if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return null;
+
+			var stem = Path.GetFileNameWithoutExtension(declaredPath);
+			var ext = Path.GetExtension(declaredPath);
+
+			// Unplated first: the bare glyph on transparency, which is what the taskbar draws.
+			// Plated variants bake in a solid accent-coloured square that would sit on the
+			// sidebar as a coloured tile.
+			return LargestVariant(dir, $"{stem}.targetsize-*_altform-unplated{ext}")
+				?? LargestVariant(dir, $"{stem}.targetsize-*{ext}")
+				?? LargestVariant(dir, $"{stem}.scale-*{ext}")
+				?? (File.Exists(declaredPath) ? declaredPath : null);
+		}
+
+		private static string? LargestVariant(string directory, string pattern)
+			=> Directory.EnumerateFiles(directory, pattern)
+				// contrast-black / contrast-white are flat accessibility shapes.
+				.Where(p => !p.Contains("contrast-", StringComparison.OrdinalIgnoreCase))
+				.OrderByDescending(QualifierNumber)
+				.FirstOrDefault();
+
+		// targetsize-256_altform-unplated → 256, scale-200 → 200. Only ever compared against
+		// numbers from the SAME pattern, so absolute pixels and percentages never mix.
+		private static int QualifierNumber(string path)
+		{
+			var match = Regex.Match(Path.GetFileNameWithoutExtension(path), @"-(\d+)");
+			return match.Success && int.TryParse(match.Groups[1].Value, out var n) ? n : 0;
+		}
+
+		private static Icon LoadPngAsIcon(string pngPath)
+		{
+			using var bitmap = new Bitmap(pngPath);
+			return BitmapToIcon(bitmap);
+		}
+
+		private static Icon BitmapToIcon(Bitmap bitmap)
+		{
+			var hicon = bitmap.GetHicon();
+			try
+			{
+				using var borrowed = Icon.FromHandle(hicon);
+				return (Icon)borrowed.Clone();
+			}
+			finally { DestroyIcon(hicon); }
+		}
+		#endregion
 
 		private static Icon? TryGetWindowIcon(IntPtr hwnd)
 		{
