@@ -100,6 +100,7 @@ namespace StageManager.Native
 				if (Win32Helper.IsAppWindow(handle))
 				{
 					UncloakStartupMinimized(handle);
+					RescueParkedWindow(handle);
 					RegisterWindow(handle, false);
 				}
 				return true;
@@ -180,6 +181,63 @@ namespace StageManager.Native
 
 			// Clear collections to release references
 			_windows.Clear();
+		}
+
+		// Where a rescued window lands, inset from the work area's top-left, and how far each
+		// further one cascades so a run that parked several doesn't stack them all on one spot.
+		private const int RescueInsetPx = 48;
+		private const int RescueCascadePx = 32;
+		private int _rescuedCount;
+
+		/// <summary>
+		/// Brings a window back on screen if a previous run died while it was parked off-screen.
+		/// <para>
+		/// OpacityWindowStrategy hides windows by moving them past the bottom-right of the
+		/// virtual screen, and keeps the way home only in a static dictionary — so a crash, or
+		/// anything else that skips Stop, takes the sole record of where they belonged with it.
+		/// The window survives with a working taskbar button that cannot bring it anywhere
+		/// visible, which reads as the app refusing to open.
+		/// </para>
+		/// <para>
+		/// The original rect is gone, so this restores reachability, not layout: the size is
+		/// kept and the window is dropped near the work area's top-left.
+		/// </para>
+		/// </summary>
+		private void RescueParkedWindow(IntPtr hwnd)
+		{
+			// A minimized window reports a placeholder rect near (-32000,-32000), which would
+			// read as off-screen. UncloakStartupMinimized has already restored those by now.
+			if (Win32.IsIconic(hwnd))
+				return;
+
+			var rect = new Win32.Rect();
+			if (!Win32.GetWindowRect(hwnd, ref rect))
+				return;
+
+			// Same reachability test the drag uses (DragDropManager.IsOnScreen): the park point
+			// is past both the right and bottom edges of the virtual screen.
+			var virtualScreen = SystemInformation.VirtualScreen;
+			if (rect.Left < virtualScreen.Right && rect.Top < virtualScreen.Bottom)
+				return;
+
+			var work = Screen.PrimaryScreen?.WorkingArea ?? virtualScreen;
+			var offset = RescueInsetPx + _rescuedCount++ * RescueCascadePx;
+
+			Win32.SetWindowPos(hwnd, IntPtr.Zero,
+				work.Left + offset, work.Top + offset, 0, 0,
+				Win32.SetWindowPosFlags.IgnoreResize |
+				Win32.SetWindowPosFlags.IgnoreZOrder |
+				Win32.SetWindowPosFlags.DoNotActivate);
+
+			// Moving it back is not enough on its own. A window parked by a run that also went
+			// through UncloakStartupMinimized carries alpha 0 and WS_EX_TRANSPARENT, which only
+			// OpacityWindowStrategy.Show ever undoes — so without this the rescue would deliver
+			// an invisible, click-through window to the middle of the desktop.
+			var ex = Win32.GetWindowExStyleLongPtr(hwnd);
+			Win32.SetWindowStyleExLongPtr(hwnd, ex & ~Win32.WS_EX.WS_EX_TRANSPARENT);
+			Win32Helper.SetAlpha(hwnd, 255);
+
+			Log.Info("STARTUP", $"Rescued window 0x{hwnd.ToInt64():X} parked off-screen at ({rect.Left},{rect.Top}) by a previous run");
 		}
 
 		private void UncloakStartupMinimized(IntPtr hwnd)
@@ -517,9 +575,23 @@ namespace StageManager.Native
 			window.IsMouseMoving = true;
 		}
 
+		/// <summary>
+		/// Marks the button-up now being processed as the end of a drag, so it is not also
+		/// read as a click on the desktop behind the sidebar.
+		/// <para>
+		/// Clearing <c>_desktopClickPending</c> matters as much as stamping the timestamp:
+		/// MouseHook queues the pending click on WM_LBUTTONUP and only fires it a
+		/// double-click interval later, and that delayed check never re-reads
+		/// <c>_lastDragEnd</c>. A caller reacting to the same button-up from a different hook
+		/// can therefore arrive after the click is already queued — the timestamp alone would
+		/// come too late to stop it.
+		/// </para>
+		/// </summary>
 		public void SuppressNextDesktopClick()
 		{
 			_lastDragEnd = Environment.TickCount64;
+			lock (_desktopClickLock)
+				_desktopClickPending = false;
 		}
 
 		private void HandleWindowMoveEnd()
