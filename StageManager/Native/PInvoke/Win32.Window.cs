@@ -29,8 +29,15 @@ namespace StageManager.Native.PInvoke
 
         public enum GW : uint
         {
+            // Next window DOWN the z-order. Walking GW_HWNDNEXT from GetTopWindow visits every
+            // top-level window front-to-back, which is how a scene's stacking gets read.
+            GW_HWNDNEXT = 2,
             GW_OWNER = 4,
         }
+
+        /// <summary>Frontmost top-level child of <paramref name="hWnd"/>; IntPtr.Zero means the desktop.</summary>
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetTopWindow(IntPtr hWnd);
 
         public static long CHILDID_SELF = 0;
         public enum OBJID { OBJID_WINDOW = 0 }

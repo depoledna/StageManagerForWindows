@@ -271,6 +271,7 @@ namespace StageManager
 			Log.Window("EVENT", "WindowDestroyed", window);
 
 			OpacityWindowStrategy.CleanupWindow(window.Handle);
+			ForgetZOrder(window.Handle);
 
 			var scene = FindSceneForWindow(window);
 
@@ -496,6 +497,11 @@ namespace StageManager
 					s.IsSelected = s.Equals(scene);
 				}
 
+				// Read the outgoing stacking BEFORE anything is hidden — parking a window
+				// off-screen leaves it in the z-chain, but the order is only meaningful while
+				// the scene is still the one on screen.
+				CaptureZOrder(otherWindows);
+
 				Log.Info("SWITCH", $"Hiding {otherWindows.Length} windows");
 				foreach (var o in otherWindows)
 				{
@@ -507,7 +513,10 @@ namespace StageManager
 				if (scene is object)
 				{
 					Log.Info("SWITCH", $"Showing {scene.Windows.Count()} windows in target scene");
-					foreach (var w in scene.Windows)
+					// Bottom-most first: Show ends in BringWindowToTop, so whichever window is
+					// shown last ends up on top. Feeding them in reverse depth order replays the
+					// stacking the scene had when it was last on screen.
+					foreach (var w in OrderBottomToTop(scene.Windows))
 					{
 						// Option1: Restore-then-clear for any minimized window in the active scene
 						if (w.IsMinimized)
@@ -522,11 +531,13 @@ namespace StageManager
 					}
 
 					// Determine which window should get focus after restore – pick the last
-					// focused window if it belongs to the scene and is not minimised, otherwise the first visible one.
+					// focused window if it belongs to the scene and is not minimised, otherwise
+					// the one that was frontmost. Focusing raises a window to the top, so taking
+					// the first in list order here would undo the stacking just restored above.
 					if (_lastFocusedWindow is object && scene.Windows.Contains(_lastFocusedWindow) && !_lastFocusedWindow.IsMinimized)
 						focusCandidate = _lastFocusedWindow;
 					else
-						focusCandidate = scene.Windows.FirstOrDefault(w => !w.IsMinimized);
+						focusCandidate = OrderBottomToTop(scene.Windows).LastOrDefault(w => !w.IsMinimized);
 
 					Log.Window("SWITCH", "Focus candidate", focusCandidate ?? scene.Windows.FirstOrDefault());
 				}
@@ -793,6 +804,66 @@ namespace StageManager
 		/// dragged tray window to its parked state when a sidebar drag is cancelled,
 		/// so it stays hidden on stage while the live tile keeps capturing it.
 		/// </summary>
+		#region Z-order preservation
+		// Depth of a window the last time its scene was on screen: 0 = frontmost, larger =
+		// further back. Without this a switch rebuilt the stack from Scene.Windows list order,
+		// so two overlapping windows swapped which one was on top every time.
+		private readonly Dictionary<IntPtr, int> _zDepth = new();
+		private readonly object _zDepthLock = new();
+
+		/// <summary>
+		/// Records how deep each of <paramref name="windows"/> currently sits in the desktop
+		/// z-chain. Walks the chain once front-to-back and stops as soon as every window of
+		/// interest has been placed, so the cost is bounded by the windows above the last one.
+		/// </summary>
+		private void CaptureZOrder(IReadOnlyCollection<IWindow> windows)
+		{
+			if (windows.Count == 0) return;
+
+			var wanted = new HashSet<IntPtr>(windows.Select(w => w.Handle));
+			var found = new Dictionary<IntPtr, int>(wanted.Count);
+			var depth = 0;
+
+			for (var h = Win32.GetTopWindow(IntPtr.Zero);
+				h != IntPtr.Zero && found.Count < wanted.Count;
+				h = Win32.GetWindow(h, Win32.GW.GW_HWNDNEXT))
+			{
+				if (wanted.Contains(h))
+					found[h] = depth++;
+			}
+
+			if (found.Count == 0) return;
+
+			lock (_zDepthLock)
+			{
+				foreach (var (handle, d) in found)
+					_zDepth[handle] = d;
+			}
+		}
+
+		/// <summary>
+		/// The scene's windows ordered back-to-front, so a caller that brings each one to the
+		/// top in turn ends with the captured stacking. Windows with no captured depth (never
+		/// seen on screen — a brand new window, or one added while the scene was hidden) sort
+		/// to the back, behind everything whose position is actually known.
+		/// </summary>
+		private IEnumerable<IWindow> OrderBottomToTop(IEnumerable<IWindow> windows)
+		{
+			lock (_zDepthLock)
+			{
+				return windows
+					.OrderByDescending(w => _zDepth.TryGetValue(w.Handle, out var d) ? d : int.MaxValue)
+					.ToArray();
+			}
+		}
+
+		private void ForgetZOrder(IntPtr handle)
+		{
+			lock (_zDepthLock)
+				_zDepth.Remove(handle);
+		}
+		#endregion
+
 		public void ParkWindow(IWindow window) => WindowStrategy.Hide(window);
 
 		/// <summary>
@@ -816,9 +887,15 @@ namespace StageManager
 				Log.Info("SWITCH", "Pre-hide: no current scene, nothing to hide");
 				return;
 			}
-			var count = _current.Windows.Count();
-			Log.Info("SWITCH", $"Pre-hiding {count} windows in '{_current.Title}' for animation");
-			foreach (var w in _current.Windows)
+			var windows = _current.Windows.ToArray();
+			Log.Info("SWITCH", $"Pre-hiding {windows.Length} windows in '{_current.Title}' for animation");
+
+			// The animated path parks the outgoing scene here, before SwitchTo runs, so this is
+			// the last moment its stacking is readable. Capture it or coming back to this scene
+			// finds no depths recorded and falls back to list order.
+			CaptureZOrder(windows);
+
+			foreach (var w in windows)
 				WindowStrategy.Hide(w);
 		}
 
