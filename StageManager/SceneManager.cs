@@ -27,6 +27,12 @@ namespace StageManager
 		private IWindow? _lastFocusedWindow;
 		private DateTime _lastFocusChange = DateTime.MinValue; // Track rapid focus changes
 
+		// Windows the user minimized themselves. A minimized window is never parked —
+		// OpacityWindowStrategy.Hide skips iconic windows — so nothing else records that it
+		// left the stage on purpose, and the restore passes in SwitchTo and
+		// RestoreMinimizedInvisibly would drag it back on the next scene switch.
+		private readonly HashSet<IntPtr> _userMinimized = new HashSet<IntPtr>();
+
 		/// <summary>
 		/// When set, focus-triggered scene switches use this delegate instead of calling SwitchTo directly.
 		/// MainWindow sets this to inject the transition animation.
@@ -148,10 +154,31 @@ namespace StageManager
 					return;
 				}
 
+				// A parked window is off-screen by our own hand, so any activation it wins is
+				// one nobody asked for: minimizing hands the foreground to the next window in
+				// the z-chain, and parked windows are still in that chain (Hide keeps their
+				// z-order deliberately). Following that event would yank the stage to a scene
+				// the user never picked — and would immediately undo the stow below.
+				// Time-based guards do not work here: WinEvents are queued behind our own
+				// hook callback, so they land after any flag we could raise has dropped.
+				if (OpacityWindowStrategy.TryGetOriginalPosition(window.Handle, out _, out _))
+				{
+					Log.Window("FOCUS", "Foreground on parked window, ignoring", window);
+					return;
+				}
+
 				Log.Window("FOCUS", "Foreground change", window);
 
 				_lastFocusedWindow = window; // remember for scene restore
 				SwitchToSceneByWindow(window).SafeFireAndForget();
+			}
+			else if (type == WindowUpdateType.MinimizeStart)
+			{
+				OnWindowMinimized(window);
+			}
+			else if (type == WindowUpdateType.MinimizeEnd)
+			{
+				OnWindowRestored(window).SafeFireAndForget();
 			}
 			// Some applications surface a previously hidden window with a simple ShowWindow
 			// call that does NOT bring the window to the foreground. In that case the
@@ -194,6 +221,93 @@ namespace StageManager
 					SwitchToSceneByWindow(window).SafeFireAndForget();
 				}
 			}
+		}
+
+		/// <summary>
+		/// True when the user minimized this window and has not restored it since. Such a
+		/// window stays off the stage even when its scene comes back — the same way macOS
+		/// leaves a minimized window in the Dock while its group is on stage.
+		/// </summary>
+		private bool IsUserMinimized(IWindow window)
+		{
+			lock (_userMinimized)
+				return _userMinimized.Contains(window.Handle);
+		}
+
+		/// <summary>
+		/// Drops the user-minimized mark, for callers that un-minimize a window on the user's
+		/// behalf (dragging its tile out of the sidebar, moving it between scenes). Clearing it
+		/// before the ShowWindow call also stops the resulting MINIMIZEEND from being read as
+		/// the user restoring the window from the taskbar.
+		/// </summary>
+		public void ForgetUserMinimized(IWindow window)
+		{
+			lock (_userMinimized)
+				_userMinimized.Remove(window.Handle);
+		}
+
+		/// <summary>
+		/// Handles the user minimizing a window. The window itself leaves the stage for good
+		/// until it is restored; when it was the last one keeping the current scene on screen,
+		/// the whole scene is stowed back into the sidebar and the desktop is shown — the same
+		/// end state a blank desktop click produces.
+		/// </summary>
+		private void OnWindowMinimized(IWindow window)
+		{
+			if (_suspend || IsPersistentWindow(window))
+				return;
+
+			lock (_userMinimized)
+				_userMinimized.Add(window.Handle);
+
+			Log.Window("MINIMIZE", "User minimized", window);
+
+			var scene = FindSceneForWindow(window);
+			if (scene is null || !ReferenceEquals(scene, _current))
+				return;
+
+			// Exclude this handle explicitly rather than trusting IsMinimized: MINIMIZESTART
+			// fires at the start of the animation and the iconic flag may not be set yet.
+			if (scene.Windows.Any(w => w.Handle != window.Handle && !w.IsMinimized))
+				return;
+
+			Log.Action($"Last window of '{scene.Title}' minimized → stow scene, show desktop");
+			SwitchTo(null).SafeFireAndForget();
+		}
+
+		/// <summary>
+		/// Handles the user restoring a minimized window from the taskbar. Switches to the
+		/// window's scene explicitly instead of leaving it to the foreground event that
+		/// follows: the window may still be parked off-screen from an earlier scene switch,
+		/// and the parked-window guard in the foreground handler would (correctly) drop it.
+		/// </summary>
+		private async Task OnWindowRestored(IWindow window)
+		{
+			bool wasUserMinimized;
+			lock (_userMinimized)
+				wasUserMinimized = _userMinimized.Remove(window.Handle);
+
+			// Our own restore passes call ShowNormal and echo a MINIMIZEEND straight back
+			// here. Those windows were never marked, so the flag doubles as the echo guard.
+			if (!wasUserMinimized || _suspend)
+				return;
+
+			Log.Window("MINIMIZE", "User restored from taskbar", window);
+
+			var scene = FindSceneForWindow(window);
+			if (scene is null)
+				return;
+
+			if (ReferenceEquals(scene, _current))
+			{
+				WindowStrategy.Show(window);
+				return;
+			}
+
+			if (AnimatedSwitch != null)
+				await AnimatedSwitch(scene);
+			else
+				await SwitchTo(scene);
 		}
 
 		private bool IsBlankDesktopClick(IntPtr handle)
@@ -272,6 +386,7 @@ namespace StageManager
 
 			OpacityWindowStrategy.CleanupWindow(window.Handle);
 			ForgetZOrder(window.Handle);
+			ForgetUserMinimized(window);
 
 			var scene = FindSceneForWindow(window);
 
@@ -338,6 +453,27 @@ namespace StageManager
 				return _scenes.FirstOrDefault(s => string.Equals(s.Key, processName, StringComparison.OrdinalIgnoreCase));
 		}
 
+		/// <summary>
+		/// Pulls tracked windows of the same app that belong to no scene into
+		/// <paramref name="scene"/>. A window only joins a scene when it gains focus, so an
+		/// app that opens several windows at once leaves every unfocused one orphaned —
+		/// parked off-screen with no tile and no way of ever coming back.
+		/// </summary>
+		private void AdoptOrphanWindows(Scene scene)
+		{
+			foreach (var window in WindowsManager.Windows.ToArray())
+			{
+				if (IsPersistentWindow(window) || FindSceneForWindow(window) is not null)
+					continue;
+				if (!string.Equals(GetWindowGroupKey(window), scene.Key, StringComparison.OrdinalIgnoreCase))
+					continue;
+
+				scene.Add(window);
+				Log.Scene("Adopted orphaned window of the same app", scene, window);
+				SceneChanged?.Invoke(this, new SceneChangedEventArgs(scene, window, ChangeType.Updated));
+			}
+		}
+
 		private async void WindowsManager_WindowCreated(IWindow window, bool firstCreate)
 		{
 			SwitchToSceneByNewWindow(window).SafeFireAndForget();
@@ -383,6 +519,7 @@ namespace StageManager
 						_scenes.Add(scene);
 					Log.Scene("Created new scene for window", scene, window);
 					SceneChanged?.Invoke(this, new SceneChangedEventArgs(scene, window, ChangeType.Created));
+					AdoptOrphanWindows(scene);
 				}
 			}
 			else
@@ -405,11 +542,29 @@ namespace StageManager
 				return;
 			}
 
-			// Only create/switch scenes for windows that are actually focused, not just created
-			// This prevents scene creation for new windows that don't have focus yet
+			// Only CREATE or SWITCH scenes for windows that are actually focused, not just
+			// created. An unfocused new window still has to be bound to its app's scene if
+			// one exists, or it belongs nowhere and stays parked off-screen for good; it
+			// just must not drag the stage over to itself.
 			if (!window.IsFocused)
 			{
-				Log.Window("SCENE", "New window not focused, skipping", window);
+				var ownerScene = FindSceneForProcess(GetWindowGroupKey(window));
+				if (ownerScene is null || FindSceneForWindow(window) is not null)
+				{
+					Log.Window("SCENE", "New window not focused, skipping", window);
+					return;
+				}
+
+				ownerScene.Add(window);
+				Log.Scene("New unfocused window → added to its app's scene", ownerScene, window);
+				SceneChanged?.Invoke(this, new SceneChangedEventArgs(ownerScene, window, ChangeType.Updated));
+
+				// Match the scene it just joined: on stage if that scene is showing, parked
+				// with the others if not.
+				if (ReferenceEquals(ownerScene, _current))
+					WindowStrategy.Show(window);
+				else
+					WindowStrategy.Hide(window);
 				return;
 			}
 
@@ -424,6 +579,7 @@ namespace StageManager
 					_scenes.Add(scene);
 				Log.Scene("New window → new scene created", scene, window);
 				SceneChanged?.Invoke(this, new SceneChangedEventArgs(scene, window, ChangeType.Created));
+				AdoptOrphanWindows(scene);
 			}
 			else
 			{
@@ -512,14 +668,16 @@ namespace StageManager
 				// Phase2: bring in target-scene windows.
 				if (scene is object)
 				{
-					Log.Info("SWITCH", $"Showing {scene.Windows.Count()} windows in target scene");
+					Log.Frame("SWITCH", $"Show pass START, {scene.Windows.Count()} windows in target scene");
 					// Bottom-most first: Show ends in BringWindowToTop, so whichever window is
 					// shown last ends up on top. Feeding them in reverse depth order replays the
 					// stacking the scene had when it was last on screen.
 					foreach (var w in OrderBottomToTop(scene.Windows))
 					{
-						// Option1: Restore-then-clear for any minimized window in the active scene
-						if (w.IsMinimized)
+						// Option1: Restore-then-clear for any minimized window in the active scene.
+						// A window the user minimized stays minimized: Show below skips iconic
+						// windows, so it keeps its taskbar button and never reaches the stage.
+						if (w.IsMinimized && !IsUserMinimized(w))
 						{
 							Log.Window("SHOW", "Restoring minimized", w);
 							w.ShowNormal();
@@ -529,6 +687,10 @@ namespace StageManager
 						// Always clear any previous opacity/click-through for active scene windows
 						WindowStrategy.Show(w);
 					}
+					// Same frame as START means the whole scene was unparked inside one compose
+					// and any remaining stagger is downstream of here — the cards, or the apps
+					// repainting. A later frame means the pass itself is what splits them.
+					Log.Frame("SWITCH", "Show pass END");
 
 					// Determine which window should get focus after restore – pick the last
 					// focused window if it belongs to the scene and is not minimised, otherwise
@@ -607,6 +769,9 @@ namespace StageManager
 					if (window.IsMinimized)
 					{
 						Log.Window("MOVE", "Restoring minimized window before showing", window);
+						// Dragging a window onto the current scene is the user asking for it
+						// back, so it stops counting as deliberately minimized.
+						ForgetUserMinimized(window);
 						Win32Helper.SetAlpha(window.Handle, 0);
 						window.ShowNormal();
 					}
@@ -907,7 +1072,7 @@ namespace StageManager
 		public void RestoreMinimizedInvisibly(Scene scene)
 		{
 			if (scene == null) return;
-			foreach (var w in scene.Windows.Where(w => w.IsMinimized))
+			foreach (var w in scene.Windows.Where(w => w.IsMinimized && !IsUserMinimized(w)))
 			{
 				Win32Helper.SetAlpha(w.Handle, 0);
 				Log.Window("SWITCH", "Silent restore (minimized→alpha=0)", w);

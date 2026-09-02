@@ -280,7 +280,7 @@ namespace StageManager
 					sidebarSlot, incomingTarget, sceneModel, incomingTile,
 					outgoingSource, sidebarSlot, outgoingModel, outgoingHandle,
 						dpi, SidebarThumbCornerRadius, HideWhatTheCardsCover, ShowWhatTheCardsUncover);
-				Log.Info("TRANSITION", "Animation completed");
+				Log.Frame("TRANSITION", "Animation completed");
 			}
 			else
 			{
@@ -935,6 +935,9 @@ namespace StageManager
 					Win32.SetWindowPos(_sidebarDragWindow.Handle, IntPtr.Zero,
 						x, y, w, h, Win32.SetWindowPosFlags.DoNotActivate);
 					Win32Helper.SetAlpha(_sidebarDragWindow.Handle, 255);
+					// Back under the user's hands, so the layered style comes off — a Chromium
+					// window that keeps it renders blank.
+					Win32Helper.ClearLayered(_sidebarDragWindow.Handle);
 				}
 				else
 				{
@@ -957,6 +960,10 @@ namespace StageManager
 			if (_sidebarDragWindow == null) return;
 			if (_sidebarDragWindow.IsMinimized)
 			{
+				// Clear the mark before ShowNormal: dragging the tile out is the user asking
+				// for the window back, and the MINIMIZEEND this call echoes must not be read
+				// as a taskbar restore (which would switch scenes in the middle of the drag).
+				SceneManager.ForgetUserMinimized(_sidebarDragWindow);
 				Win32Helper.SetAlpha(_sidebarDragWindow.Handle, 0);
 				_sidebarDragWindow.ShowNormal();
 				Log.Info("DRAG", "Sidebar drag: restored minimized window");
