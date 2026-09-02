@@ -2,7 +2,12 @@
 
 	<PropertyGroup>
 		<OutputType>WinExe</OutputType>
-		<TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+		<!-- Compiled against 20348 purely for GraphicsCaptureSession.IsBorderRequired
+		     (UniversalApiContract v12), which the 19041 WinRT projection does not carry.
+		     SupportedOSPlatformVersion keeps the RUNTIME floor at 19041, so CA1416 still
+		     flags any newer API that is not version-guarded. -->
+		<TargetFramework>net10.0-windows10.0.20348.0</TargetFramework>
+		<SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
 		<Nullable>enable</Nullable>
 		<UseWPF>true</UseWPF>
 		<UseWindowsForms>true</UseWindowsForms>

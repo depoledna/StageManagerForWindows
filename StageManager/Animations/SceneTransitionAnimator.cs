@@ -151,6 +151,7 @@ namespace StageManager.Animations
 				// visuals a frame or more ahead of SwitchTo's SetWindowPos reaching the
 				// compositor, which is the flash at the end of the switch.
 				await SignalFlightLanded();
+				Log.Frame("ANIM", "Landing callback returned, cards still up");
 			}
 			catch (Exception ex)
 			{
@@ -167,6 +168,11 @@ namespace StageManager.Animations
 				incoming?.Release();
 				outgoing?.Release();
 				_isAnimating = false;
+
+				// Frames between the landing callback and here are frames where every window
+				// in the scene is back on screen but the carded one is still hidden behind
+				// its card. That gap is the carded window arriving after all the others.
+				Log.Frame("ANIM", "Cards released");
 			}
 		}
 
@@ -255,7 +261,7 @@ namespace StageManager.Animations
 
 					if (u >= 1.0)
 					{
-						Log.Info("ANIM", "Flight completed");
+						Log.Frame("ANIM", "Flight completed");
 						Finish(true);
 					}
 				}

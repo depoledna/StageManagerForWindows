@@ -79,6 +79,17 @@ namespace StageManager
 			Debug.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] [{tag}] {message}");
 		}
 
+		/// <summary>
+		/// Logs with the composition frame the call happened on. Use it where the question
+		/// is whether two things landed together, which the millisecond stamp on the other
+		/// overloads cannot answer at frame scale — see <see cref="FrameClock"/>.
+		/// </summary>
+		[Conditional("DEBUG")]
+		public static void Frame(string tag, string message)
+		{
+			Debug.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] [f{FrameClock.Frame}] [{tag}] {message}");
+		}
+
 		[Conditional("DEBUG")]
 		public static void Info(string tag, string message, IntPtr handle)
 		{

@@ -1,3 +1,4 @@
+using AsyncAwaitBestPractices;
 using System;
 using System.IO;
 using System.Threading.Tasks;
@@ -15,6 +16,9 @@ namespace StageManager
 		{
 			base.OnStartup(e);
 
+			// Before anything that logs a frame number, so the count covers the whole run.
+			FrameClock.Start();
+
 			RestoreScenesPath = ParseRestoreScenesArg(e.Args);
 			UpdateService.CleanupOldVersion();
 			if (RestoreScenesPath is null)
@@ -22,6 +26,11 @@ namespace StageManager
 
 			Services.ThemeManager.ApplyTheme();
 			Services.ThemeManager.StartListening();
+
+			// Consent is per process and only affects sessions started after it lands, so
+			// it goes out as early as possible. Not awaited: the tray tiles it misses are
+			// parked off-screen, where the indicator it suppresses cannot be seen anyway.
+			Composition.CaptureBorder.RequestAsync().SafeFireAndForget();
 
 			// Log-only — intentionally NOT setting args.Handled so the app terminates
 			DispatcherUnhandledException += (s, args) =>

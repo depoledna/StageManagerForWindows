@@ -422,9 +422,10 @@ namespace StageManager.Composition
 
 			_session = _framePool.CreateCaptureSession(_item);
 			// IsCursorCaptureEnabled has been on GraphicsCaptureSession since
-			// 19H1 (target SDK floor). IsBorderRequired needs Win11 22H2 and a
-			// QI to GraphicsCaptureSession2; skipped here to keep the floor.
+			// 19H1, below the runtime floor. The capture indicator needs consent
+			// and a newer floor, so it lives behind its own gate.
 			try { _session.IsCursorCaptureEnabled = false; } catch { }
+			CaptureBorder.Apply(_session);
 
 			_session.StartCapture();
 			_lastFrameSize = size;
