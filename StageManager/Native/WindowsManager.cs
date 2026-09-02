@@ -97,7 +97,7 @@ namespace StageManager.Native
 			// forced SW_SHOWNOACTIVATE doesn't echo EVENT_SYSTEM_MINIMIZEEND back into our pipeline.
 			Win32.EnumWindows((handle, param) =>
 			{
-				if (Win32Helper.IsAppWindow(handle))
+				if (Win32Helper.IsAppWindow(handle) && !IsOwnWindow(handle))
 				{
 					UncloakStartupMinimized(handle);
 					RescueParkedWindow(handle);
@@ -167,6 +167,9 @@ namespace StageManager.Native
 					var ex = Win32.GetWindowExStyleLongPtr(hwnd);
 					Win32.SetWindowStyleExLongPtr(hwnd, ex & ~Win32.WS_EX.WS_EX_TRANSPARENT);
 					Win32Helper.SetAlpha(hwnd, 255);
+					// Leave no trace on the window: the layered style survives this process,
+					// and a Chromium window that keeps it renders blank from here on.
+					Win32Helper.ClearLayered(hwnd);
 					Win32.ShowWindow(hwnd, Win32.SW.SW_SHOWMINNOACTIVE);
 				}
 				catch { /* best-effort during shutdown */ }
@@ -236,8 +239,27 @@ namespace StageManager.Native
 			var ex = Win32.GetWindowExStyleLongPtr(hwnd);
 			Win32.SetWindowStyleExLongPtr(hwnd, ex & ~Win32.WS_EX.WS_EX_TRANSPARENT);
 			Win32Helper.SetAlpha(hwnd, 255);
+			// A window a previous run left layered renders blank in Chromium apps, so the
+			// rescue has to undo that style too, not just the position and the alpha.
+			Win32Helper.ClearLayered(hwnd);
 
 			Log.Info("STARTUP", $"Rescued window 0x{hwnd.ToInt64():X} parked off-screen at ({rect.Left},{rect.Top}) by a previous run");
+		}
+
+		/// <summary>
+		/// True for a window RegisterWindow drops before it reaches the candidacy filter.
+		/// Checked up front because the two calls that run before RegisterWindow change the
+		/// window — one un-minimizes it at alpha 0, the other moves it — and a window that is
+		/// never going to be tracked is one that never gets shown either, so it would be left
+		/// restored and invisible with nothing to put it back.
+		/// </summary>
+		private bool IsOwnWindow(IntPtr handle)
+		{
+			if (handle == _currentProcessWindowHandle)
+				return true;
+
+			Win32.GetWindowThreadProcessId(handle, out var processId);
+			return processId == 0 || (int)processId == _currentProcessId;
 		}
 
 		private void UncloakStartupMinimized(IntPtr hwnd)
@@ -379,6 +401,9 @@ namespace StageManager.Native
 							var ex = Win32.GetWindowExStyleLongPtr(hwnd);
 							Win32.SetWindowStyleExLongPtr(hwnd, ex & ~Win32.WS_EX.WS_EX_TRANSPARENT);
 							Win32Helper.SetAlpha(hwnd, 255);
+							// Dropped from tracking for good, so nothing else will ever undo the
+							// layered style for this window — do it here or not at all.
+							Win32Helper.ClearLayered(hwnd);
 							UnregisterWindow(hwnd);
 						}
 						break;

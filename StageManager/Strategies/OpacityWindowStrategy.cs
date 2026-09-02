@@ -2,6 +2,7 @@ using StageManager.Native.PInvoke;
 using StageManager.Native.Window;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Windows;
 
 namespace StageManager.Strategies
@@ -116,7 +117,13 @@ namespace StageManager.Strategies
 
 			var lockSem = _windowLocks.GetOrAdd(hWnd, _ => new System.Threading.SemaphoreSlim(1, 1));
 
+			// Every call below crosses into the owning app's process, and the two that move
+			// the window block until its UI thread answers. Each step is stamped so a scene
+			// whose windows do not arrive together says which window stalled and on what.
+			var tEnter = Stopwatch.GetTimestamp();
+
 			lockSem.Wait();
+			var tLock = Stopwatch.GetTimestamp();
 			try
 			{
 				if (ShouldSkipTransparencyForWindow(hWnd))
@@ -139,24 +146,45 @@ namespace StageManager.Strategies
 						_originalPositions.Remove(hWnd);
 					}
 				}
+				var tMove = Stopwatch.GetTimestamp();
 
 				// Clear WS_EX_TRANSPARENT (mouse-through) — UncloakStartupMinimized in
 				// WindowsManager sets it on cloaked startup-minimized windows; this is
 				// where it gets cleared the first time the window is shown via a scene.
 				var ex = Win32.GetWindowExStyleLongPtr(hWnd);
 				Win32.SetWindowStyleExLongPtr(hWnd, ex & ~Win32.WS_EX.WS_EX_TRANSPARENT);
+				var tStyle = Stopwatch.GetTimestamp();
 
 				// Win32Helper.SetAlpha ensures WS_EX_LAYERED is set before applying alpha.
 				Log.Window("OPACITY", "Instant show alpha→255", window);
 				Win32Helper.SetAlpha(hWnd, 255);
 
+				// Drop the layered style again now that the window is opaque and back on
+				// stage. Alpha 255 is not enough: Chromium refuses to paint a window that
+				// was forced layered from outside, so leaving the style set hands the user
+				// a blank Chrome window.
+				Win32Helper.ClearLayered(hWnd);
+				var tAlpha = Stopwatch.GetTimestamp();
+
 				window.BringToTop();
+				var tRaise = Stopwatch.GetTimestamp();
+
+				// Read the rect back instead of trusting the call. SetWindowPos returning
+				// does not mean the owning app has finished processing WM_WINDOWPOSCHANGED,
+				// and a window still reading as parked here has not moved yet.
+				var rect = new Win32.Rect();
+				Win32.GetWindowRect(hWnd, ref rect);
+
+				Log.Frame("SHOWSTEP", $"0x{hWnd.ToInt64():X} lock={Ms(tEnter, tLock)} move={Ms(tLock, tMove)} style={Ms(tMove, tStyle)} alpha={Ms(tStyle, tAlpha)} raise={Ms(tAlpha, tRaise)} total={Ms(tEnter, tRaise)}ms at=({rect.Left},{rect.Top})");
 			}
 			finally
 			{
 				lockSem.Release();
 			}
 		}
+
+		private static string Ms(long from, long to) =>
+			((to - from) * 1000.0 / Stopwatch.Frequency).ToString("F2");
 
 		public void Hide(IWindow window)
 		{

@@ -20,7 +20,14 @@ namespace StageManager.Native.PInvoke
 
         public static bool IsAppWindow(IntPtr hwnd)
         {
-            return (Win32.IsWindowVisible(hwnd) || Win32.IsIconic(hwnd)) &&
+            // A minimized window keeps WS_VISIBLE — only ShowWindow(SW_HIDE) clears it — so an
+            // "|| IsIconic" here never admitted an ordinary minimized window that the visibility
+            // test had not already admitted. What it did admit is windows an app deliberately
+            // hid: closing to the notification area leaves the window minimized AND hidden, and
+            // that combination arrived as a scene with a blank tray tile for an app the user had
+            // quit. WindowsManager.Start also un-minimizes whatever passes this test, so it
+            // brought the hidden window back on top of tiling it.
+            return Win32.IsWindowVisible(hwnd) &&
                    !Win32.GetWindowExStyleLongPtr(hwnd).HasFlag(Win32.WS_EX.WS_EX_NOACTIVATE) &&
                    !Win32.GetWindowStyleLongPtr(hwnd).HasFlag(Win32.WS.WS_CHILD);
         }
@@ -45,6 +52,32 @@ namespace StageManager.Native.PInvoke
             if (!exStyle.HasFlag(Win32.WS_EX.WS_EX_LAYERED))
                 Win32.SetWindowStyleExLongPtr(hWnd, exStyle | Win32.WS_EX.WS_EX_LAYERED);
             Win32.SetLayeredWindowAttributes(hWnd, 0, alpha, Win32.LWA_ALPHA);
+        }
+
+        /// <summary>
+        /// Removes WS_EX_LAYERED again. Must be called wherever a window is handed back to
+        /// the user, because <see cref="SetAlpha"/> only ever adds the style and it outlives
+        /// this process: Chromium renders through DirectComposition and a window forced
+        /// layered from outside falls back to a redirection surface it never paints into, so
+        /// a Chrome window left with the style set comes up blank — and stays blank after
+        /// Stage Manager exits.
+        /// </summary>
+        public static void ClearLayered(IntPtr hWnd)
+        {
+            var exStyle = Win32.GetWindowExStyleLongPtr(hWnd);
+            if (!exStyle.HasFlag(Win32.WS_EX.WS_EX_LAYERED))
+                return;
+
+            Win32.SetWindowStyleExLongPtr(hWnd, exStyle & ~Win32.WS_EX.WS_EX_LAYERED);
+
+            // The style change only reaches the frame on the next SetWindowPos with
+            // FrameChanged; without it the window keeps rendering through the stale path.
+            Win32.SetWindowPos(hWnd, IntPtr.Zero, 0, 0, 0, 0,
+                Win32.SetWindowPosFlags.FrameChanged |
+                Win32.SetWindowPosFlags.IgnoreMove |
+                Win32.SetWindowPosFlags.IgnoreResize |
+                Win32.SetWindowPosFlags.IgnoreZOrder |
+                Win32.SetWindowPosFlags.DoNotActivate);
         }
 
         public static void ForceForegroundWindow(IntPtr hWnd)
